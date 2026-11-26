@@ -1,0 +1,24 @@
+.DS_Store
+node_modules
+/build
+/.svelte-kit
+/package
+.env
+.env.*
+!.env.example
+
+.idea/*
+*.iws
+*.iml
+*.ipr
+!.idea/inspectionProfiles
+!.idea/inspectionProfiles/*
+!.run/
+.vscode/*
+.plan
+
+# Rust
+/target
+
+# specifications
+spec_impl

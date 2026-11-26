@@ -1,0 +1,3 @@
+# Byte-exact: packaging/check-notices.sh hashes these files; no line-ending conversion.
+notices/** -text
+*.lock -text
