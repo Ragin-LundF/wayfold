@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/waypoint", "crates/waypoint-core"]
+members = ["crates/wayfold", "crates/wayfold-core"]
 
 [workspace.package]
 edition = "2024"
@@ -10,7 +10,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 # OQ-3: gpui-kit 0.11.0 pins gpui-component 0.11.0 and GPUI (gpui-pre =0.3.14) together.
 gpui-kit = "=0.11.0"
-waypoint-core = { path = "crates/waypoint-core" }
+wayfold-core = { path = "crates/wayfold-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 async-channel = "2"

@@ -8347,6 +8347,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "wayfold"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "gpui-kit",
+ "notify",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "wayfold-core",
+]
+
+[[package]]
+name = "wayfold-core"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "ammonia",
+ "async-channel",
+ "blake3",
+ "csv",
+ "flate2",
+ "imagesize 0.14.0",
+ "libc",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "plist",
+ "portable-pty",
+ "regex",
+ "serde",
+ "serde_json",
+ "sevenz-rust2",
+ "tar",
+ "tempfile",
+ "tracing",
+ "unrar",
+ "zip",
+ "zstd 0.13.6",
+]
+
+[[package]]
 name = "wayland-backend"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8443,50 +8487,6 @@ dependencies = [
  "log",
  "once_cell",
  "pkg-config",
-]
-
-[[package]]
-name = "waypoint"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "gpui-kit",
- "notify",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
- "tracing-subscriber",
- "waypoint-core",
-]
-
-[[package]]
-name = "waypoint-core"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "ammonia",
- "async-channel",
- "blake3",
- "csv",
- "flate2",
- "imagesize 0.14.0",
- "libc",
- "objc2 0.6.5",
- "objc2-app-kit 0.3.2",
- "objc2-foundation 0.3.2",
- "plist",
- "portable-pty",
- "regex",
- "serde",
- "serde_json",
- "sevenz-rust2",
- "tar",
- "tempfile",
- "tracing",
- "unrar",
- "zip",
- "zstd 0.13.6",
 ]
 
 [[package]]

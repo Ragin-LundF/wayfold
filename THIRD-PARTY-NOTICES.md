@@ -1,14 +1,14 @@
 # Third-party notices
 
-Waypoint is built on open-source components. The full list of crates and versions is pinned in
+Wayfold is built on open-source components. The full list of crates and versions is pinned in
 `Cargo.lock`; the main runtime dependencies and their licenses are listed in
 `spec_impl/finder-spec/05-implementation.md` ("Runtime dependencies and licenses").
 
 The packaged app must ship this file and the `licenses/` folder.
 
 ## unRAR (RAR extraction, F08)
-Waypoint extracts RAR archives with the `unrar` / `unrar_sys` crates (0.5.8), which bundle the
-unRAR source by Alexander Roshal. Waypoint never creates RAR archives. The unRAR source may not be
+Wayfold extracts RAR archives with the `unrar` / `unrar_sys` crates (0.5.8), which bundle the
+unRAR source by Alexander Roshal. Wayfold never creates RAR archives. The unRAR source may not be
 used to develop a RAR (WinRAR) compatible archiver. Full license text: `licenses/unRAR-license.txt`.
 
 ## Lucide icons

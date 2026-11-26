@@ -1,0 +1,19 @@
+[package]
+name = "wayfold"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui-kit.workspace = true
+wayfold-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-channel.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+notify = "8.2"
+
+[dev-dependencies]
+gpui-kit = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true
