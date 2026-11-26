@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = ["crates/waypoint", "crates/waypoint-core"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# OQ-3: gpui-kit 0.11.0 pins gpui-component 0.11.0 and GPUI (gpui-pre =0.3.14) together.
+gpui-kit = "=0.11.0"
+waypoint-core = { path = "crates/waypoint-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-channel = "2"
+libc = "0.2"
+tempfile = "3"
+tracing = "0.1"
+
+# No debug info for runs and tests: on macOS it stays in the object files of every rebuild and
+# `target/` grows by GBs. Line tables keep file:line in panics and backtraces at a small cost.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = false
+
+[profile.dev.package."*"]
+debug = false
+
+# For stepping through code with variables in RustRover's debugger: `cargo build --profile debugging`
+# (builds into target/debugging; delete that folder when done).
+[profile.debugging]
+inherits = "dev"
+debug = true
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
