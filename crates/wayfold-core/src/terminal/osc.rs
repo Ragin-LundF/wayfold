@@ -124,9 +124,7 @@ fn parse_file_url(url: &[u8], local_host: &[u8]) -> Option<PathBuf> {
     let rest = url.strip_prefix(b"file://")?;
     let slash = rest.iter().position(|&b| b == b'/')?;
     let (host, path) = rest.split_at(slash);
-    let is_local = host.is_empty()
-        || host.eq_ignore_ascii_case(b"localhost")
-        || host.eq_ignore_ascii_case(local_host);
+    let is_local = host.is_empty() || host.eq_ignore_ascii_case(b"localhost") || host.eq_ignore_ascii_case(local_host);
     if !is_local {
         return None;
     }
@@ -171,13 +169,10 @@ mod tests {
 
     #[test]
     fn osc7_and_markers_split_across_reads() {
-        let stream: &[u8] = b"out\x1b]133;D;0;k=n0nce\x07\x1b]7;k=n0nce;file://myhost/tmp/a%20b%0Ac\x1b\\\x1b]133;A;k=n0nce\x07$ \x1b]133;B;k=n0nce\x07";
-        let expected = vec![
-            ShellEvent::CommandDone,
-            ShellEvent::Cwd(PathBuf::from("/tmp/a b\nc")),
-            ShellEvent::PromptStart,
-            ShellEvent::InputStart,
-        ];
+        let stream: &[u8] =
+            b"out\x1b]133;D;0;k=n0nce\x07\x1b]7;k=n0nce;file://myhost/tmp/a%20b%0Ac\x1b\\\x1b]133;A;k=n0nce\x07$ \x1b]133;B;k=n0nce\x07";
+        let expected =
+            vec![ShellEvent::CommandDone, ShellEvent::Cwd(PathBuf::from("/tmp/a b\nc")), ShellEvent::PromptStart, ShellEvent::InputStart];
         for split in 0..stream.len() {
             let (first, second) = stream.split_at(split);
             assert_eq!(scan_chunks(&[first, second]), expected, "split at {split}");
@@ -221,29 +216,18 @@ mod tests {
         assert_eq!(cwd("file:///tmp/%zz"), vec![]);
         assert_eq!(cwd("file:///tmp/%00"), vec![]);
         assert_eq!(cwd("http://myhost/tmp"), vec![]);
-        assert_eq!(
-            cwd("file://LOCALHOST/tmp/%C3%BC"),
-            vec![ShellEvent::Cwd(PathBuf::from("/tmp/\u{fc}"))]
-        );
+        assert_eq!(cwd("file://LOCALHOST/tmp/%C3%BC"), vec![ShellEvent::Cwd(PathBuf::from("/tmp/\u{fc}"))]);
         assert_eq!(cwd("file:///x"), vec![ShellEvent::Cwd(PathBuf::from("/x"))]);
     }
 
     #[test]
     fn non_utf8_path_bytes_survive() {
-        assert_eq!(
-            cwd("file:///tmp/%FF"),
-            vec![ShellEvent::Cwd(PathBuf::from(OsStr::from_bytes(
-                b"/tmp/\xff"
-            )))]
-        );
+        assert_eq!(cwd("file:///tmp/%FF"), vec![ShellEvent::Cwd(PathBuf::from(OsStr::from_bytes(b"/tmp/\xff")))]);
     }
 
     #[test]
     fn ignores_other_sequences_and_oversized_bodies() {
-        assert_eq!(
-            scan_chunks(&[b"\x1b[31mred\x1b]0;title\x07\x1b]133;X;k=n0nce\x07"]),
-            vec![]
-        );
+        assert_eq!(scan_chunks(&[b"\x1b[31mred\x1b]0;title\x07\x1b]133;X;k=n0nce\x07"]), vec![]);
         let mut huge = b"\x1b]7;k=n0nce;file:///".to_vec();
         huge.extend(std::iter::repeat_n(b'a', MAX_OSC_LEN + 10));
         huge.extend(b"\x07\x1b]133;C;k=n0nce\x07");

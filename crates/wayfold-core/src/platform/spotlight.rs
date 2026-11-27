@@ -26,8 +26,9 @@ pub fn name_query(text: &str) -> String {
     format!("kMDItemFSName == \"*{}*\"cd", &q[1..q.len() - 1])
 }
 
-pub fn tag_query(tag: &str) -> String {
-    format!("kMDItemUserTags == {}", quote(tag))
+/// Items carrying any of `names` (a tag's localized and English names).
+pub fn tag_query(names: &[&str]) -> String {
+    names.iter().map(|n| format!("kMDItemUserTags == {}", quote(n))).collect::<Vec<_>>().join(" || ")
 }
 
 /// Run `query` scoped to `root`, streaming paths in batches. Returns Err when Spotlight is
@@ -81,6 +82,6 @@ mod tests {
     #[test]
     fn s01_query_escapes_quotes_and_wildcards() {
         assert_eq!(name_query("a\"b*"), r#"kMDItemFSName == "*a\"b\**"cd"#);
-        assert_eq!(tag_query("Red"), r#"kMDItemUserTags == "Red""#);
+        assert_eq!(tag_query(&["Rot", "Red"]), r#"kMDItemUserTags == "Rot" || kMDItemUserTags == "Red""#);
     }
 }

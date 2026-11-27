@@ -7,10 +7,10 @@ use crate::ui::workspace::Workspace;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{h_flex, v_flex, WindowExt as _};
-use gpui_kit::*;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
+use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use std::path::PathBuf;
 use wayfold_core::ops::{self, CaseRule, ItemOutcome, RenameProblem, RenameRow, RenameRules, Sequence};
 use wayfold_core::pool;
@@ -113,7 +113,10 @@ impl BatchRenameView {
     }
 
     fn can_apply(&self) -> bool {
-        self.error.is_none() && !self.rows.is_empty() && self.rows.iter().all(|r| r.problem.is_none()) && self.rows.iter().any(|r| r.changes())
+        self.error.is_none()
+            && !self.rows.is_empty()
+            && self.rows.iter().all(|r| r.problem.is_none())
+            && self.rows.iter().any(|r| r.changes())
     }
 
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -137,8 +140,14 @@ impl BatchRenameView {
                                 _ => None,
                             })
                             .collect();
-                        w.undo_stack.push(undo);
-                        w.status = Some(if failed.is_empty() { format!("Renamed {} item(s)", results.len()).into() } else { format!("{} rename(s) failed: {}", failed.len(), failed.join("; ")).into() });
+                        if let Some(u) = undo {
+                            w.undo_stack.push(u);
+                        }
+                        w.status = Some(if failed.is_empty() {
+                            format!("Renamed {} item(s)", results.len()).into()
+                        } else {
+                            format!("{} rename(s) failed: {}", failed.len(), failed.join("; ")).into()
+                        });
                     }
                     Err(p) => w.status = Some(format!("Rename blocked: {p:?}").into()),
                 }
@@ -166,39 +175,44 @@ impl Render for BatchRenameView {
         let p = palette(cx);
         let name = |b: &PathBuf| b.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let blocked = self.rows.iter().filter(|r| r.problem.is_some()).count();
-        let case_button = |id: &'static str, label: &'static str, rule: Option<CaseRule>, current: Option<CaseRule>, cx: &mut Context<Self>| {
-            Button::new(id).small().label(label).selected(current == rule).on_click(cx.listener(move |v, _, _, cx| {
-                v.case = rule;
-                v.replan(cx);
-            }))
-        };
+        let case_button =
+            |id: &'static str, label: &'static str, rule: Option<CaseRule>, current: Option<CaseRule>, cx: &mut Context<Self>| {
+                Button::new(id).small().label(label).selected(current == rule).on_click(cx.listener(move |v, _, _, cx| {
+                    v.case = rule;
+                    v.replan(cx);
+                }))
+            };
         let current_case = self.case;
         v_flex()
             .gap_2()
-            .child(h_flex().gap_3().child(div().flex_1().child(field("Find", Input::new(&self.find)))).child(div().flex_1().child(field("Replace with", Input::new(&self.replace)))))
             .child(
-                Checkbox::new("regex")
-                    .label("Use regular expression ($1 in replacement)")
-                    .checked(self.regex)
-                    .on_click(cx.listener(|v, c: &bool, _, cx| {
-                        v.regex = *c;
-                        v.replan(cx);
-                    })),
+                h_flex()
+                    .gap_3()
+                    .child(div().flex_1().child(field("Find", Input::new(&self.find))))
+                    .child(div().flex_1().child(field("Replace with", Input::new(&self.replace)))),
             )
-            .child(h_flex().gap_3().child(div().flex_1().child(field("Prefix", Input::new(&self.prefix)))).child(div().flex_1().child(field("Suffix", Input::new(&self.suffix)))))
+            .child(Checkbox::new("regex").label("Use regular expression ($1 in replacement)").checked(self.regex).on_click(cx.listener(
+                |v, c: &bool, _, cx| {
+                    v.regex = *c;
+                    v.replan(cx);
+                },
+            )))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(div().flex_1().child(field("Prefix", Input::new(&self.prefix))))
+                    .child(div().flex_1().child(field("Suffix", Input::new(&self.suffix)))),
+            )
             .child(
                 h_flex()
                     .gap_3()
                     .items_end()
-                    .child(
-                        Checkbox::new("seq")
-                            .label("Number sequentially from")
-                            .checked(self.sequence)
-                            .on_click(cx.listener(|v, c: &bool, _, cx| {
-                                v.sequence = *c;
-                                v.replan(cx);
-                            })),
-                    )
+                    .child(Checkbox::new("seq").label("Number sequentially from").checked(self.sequence).on_click(cx.listener(
+                        |v, c: &bool, _, cx| {
+                            v.sequence = *c;
+                            v.replan(cx);
+                        },
+                    )))
                     .child(div().w(px(90.)).child(Input::new(&self.start)))
                     .child(div().flex_1())
                     .child(case_button("case-none", "Keep case", None, current_case, cx))
@@ -242,11 +256,17 @@ impl Render for BatchRenameView {
                     })),
             )
             .when_some(self.error.clone(), |d, e| d.child(div().text_color(p.danger).child(e)))
-            .when(blocked > 0, |d| d.child(div().text_color(p.warning).child(format!("⚠ {blocked} conflicting or invalid name(s): Apply is disabled"))))
+            .when(blocked > 0, |d| {
+                d.child(div().text_color(p.warning).child(format!("⚠ {blocked} conflicting or invalid name(s): Apply is disabled")))
+            })
             .child(
-                footer(cx)
-                    .child(Button::new("cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
-                    .child(Button::new("apply").primary().label("Apply rename").disabled(!self.can_apply()).on_click(cx.listener(|v, _, window, cx| v.apply(window, cx)))),
+                footer(cx).child(Button::new("cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx))).child(
+                    Button::new("apply")
+                        .primary()
+                        .label("Apply rename")
+                        .disabled(!self.can_apply())
+                        .on_click(cx.listener(|v, _, window, cx| v.apply(window, cx))),
+                ),
             )
     }
 }

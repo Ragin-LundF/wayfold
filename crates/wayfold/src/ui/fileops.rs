@@ -2,21 +2,22 @@
 //! the UI only plans, confirms and shows outcomes.
 
 use crate::app::actions::*;
+use crate::ui::browser::icon;
 use crate::ui::clipboard::ClipMode;
-use crate::ui::theme::{self, palette};
+use crate::ui::theme::palette;
 use crate::ui::workspace::Workspace;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::{Button, ButtonCustomVariant, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{h_flex, v_flex, WindowExt as _};
-use gpui_kit::*;
+use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
+use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::component::Selectable as _;
+use gpui_kit::*;
 use std::cell::Cell;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use wayfold_core::fs::size::{folder_size, SizeTotals};
-use wayfold_core::fs::{format_size, tags};
+use wayfold_core::fs::size::{SizeTotals, folder_size};
+use wayfold_core::fs::{Entry, format_size, tags};
 use wayfold_core::ops::{self, ItemOutcome, TransferMode, UndoAction};
 use wayfold_core::platform;
 use wayfold_core::pool::{self, CancelToken};
@@ -33,8 +34,72 @@ pub fn footer(cx: &App) -> Div {
     h_flex().w_full().gap_2().justify_end().pt_4().mt_2().border_t_1().border_color(p.line)
 }
 
+/// Byte length of the part of `name` a rename preselects: before the last extension dot,
+/// the whole name for folders, dotfiles and names without extension.
+fn stem_len(name: &str, is_dir: bool) -> usize {
+    match name.rfind('.') {
+        Some(dot) if dot > 0 && !is_dir => dot,
+        _ => name.len(),
+    }
+}
+
+/// Tags dialog chip: adds the standard tag `standard` to `path` (`on`) or removes it. On a German
+/// Mac the red tag is "Rot"; a custom tag that only shares its color is kept.
+pub(crate) fn set_standard_tag(path: &Path, standard: &tags::Tag, english: &str, on: bool) -> std::io::Result<()> {
+    let mut t = tags::read(path);
+    if !on {
+        t.retain(|x| !x.is_standard(standard, english))
+    } else if !t.iter().any(|x| x.is_standard(standard, english)) {
+        t.push(standard.clone())
+    }
+    tags::write(path, &t)
+}
+
+/// Tags dialog chip state: selected when every entry has the standard tag (a click then removes it).
+pub(crate) fn all_have_standard_tag(entries: &[Entry], standard: &tags::Tag, english: &str) -> bool {
+    entries.iter().all(|e| e.tags.iter().any(|t| t.is_standard(standard, english)))
+}
+
 pub fn field(label: &'static str, control: impl IntoElement) -> impl IntoElement {
     v_flex().gap_2().my_2().child(div().text_sm().child(label)).child(control)
+}
+
+/// One option of a [`segmented`] control: element id, label, value.
+pub type Segment<T> = (&'static str, &'static str, T);
+
+/// Segmented control (D-2): a bordered group of exclusive options on gpui-component's ButtonGroup.
+/// The active segment is accent-tinted with a bold label and a check icon, so the state never rests
+/// on color alone; ButtonGroup reports it to screen readers as the pressed (toggled) state, and each
+/// segment is a Tab stop with the house focus ring that Space activates (in a dialog, Return stays the
+/// dialog's confirm key).
+pub fn segmented<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    options: &[Segment<T>],
+    active: T,
+    disabled: bool,
+    cx: &App,
+    on_select: impl Fn(&T, &mut Window, &mut App) + 'static,
+) -> ButtonGroup {
+    let p = palette(cx);
+    let on_select = Rc::new(on_select);
+    debug_assert_eq!(options.iter().filter(|o| o.2 == active).count(), 1, "segmented {id}: exactly one option must be active");
+    // A selected button never shows hover, so the tint needs no hover color; `active` is its fill.
+    let tint = ButtonCustomVariant::new(cx).color(p.accent).foreground(p.text).active(p.accent.opacity(0.22));
+    ButtonGroup::new(id).children(options.iter().map(|&(seg_id, label, value)| {
+        let on_select = on_select.clone();
+        let on = value == active;
+        // Every segment reserves the check slot (invisible when off), so labels don't shift on toggle.
+        let check = if on { icon("check") } else { icon("check").text_color(transparent_black()) };
+        Button::new(seg_id)
+            .small()
+            .label(label)
+            .selected(on)
+            .disabled(disabled)
+            .icon(check)
+            // Button draws a border only for the default variant or `outline()`; the outline keeps the group's frame.
+            .when(on, |b| b.custom(tint).outline().font_weight(FontWeight::BOLD))
+            .on_click(move |_, window, cx| on_select(&value, window, cx))
+    }))
 }
 
 impl Workspace {
@@ -50,7 +115,13 @@ impl Workspace {
             .on_action(cx.listener(|w, _: &DuplicateItems, window, cx| {
                 for e in w.selected_entries() {
                     let h = std::rc::Rc::new(ops::duplicate(&e.path));
-                    w.track_transfer_handle(h, format!("Duplicate {}", e.display_name()), e.path.parent().unwrap_or(Path::new("/")).to_path_buf(), window, cx);
+                    w.track_transfer_handle(
+                        h,
+                        format!("Duplicate {}", e.display_name()),
+                        e.path.parent().unwrap_or(Path::new("/")).to_path_buf(),
+                        window,
+                        cx,
+                    );
                 }
             }))
             .on_action(cx.listener(|w, _: &MakeAlias, _, cx| w.make_alias(cx)))
@@ -75,6 +146,9 @@ impl Workspace {
             return;
         };
         let dest = self.tab().location.clone();
+        if self.refuse_into_itself(&sources, &dest, cx) {
+            return;
+        }
         let mode = if mode == ClipMode::Cut { TransferMode::Move } else { TransferMode::Copy };
         self.start_transfer(mode, sources, dest, window, cx);
     }
@@ -82,7 +156,7 @@ impl Workspace {
     /// Drag & drop: same volume moves, other volumes copy (Finder convention).
     pub fn drop_paths(&mut self, paths: Vec<PathBuf>, dest: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let paths: Vec<PathBuf> = paths.into_iter().filter(|p| p.parent() != Some(dest.as_path()) && *p != dest).collect();
-        if paths.is_empty() {
+        if paths.is_empty() || self.refuse_into_itself(&paths, &dest, cx) {
             return;
         }
         let same_volume = |a: &Path, b: &Path| {
@@ -93,7 +167,35 @@ impl Workspace {
         self.start_transfer(mode, paths, dest, window, cx);
     }
 
-    pub fn track_transfer_handle(&mut self, handle: Rc<ops::TransferHandle>, label: String, dest: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    /// Refuses up front, with a status message, when `dest` is one of the folders in `sources` or
+    /// lies inside one; the transfer core still refuses it per item as a safety net.
+    fn refuse_into_itself(&mut self, sources: &[PathBuf], dest: &Path, cx: &mut Context<Self>) -> bool {
+        let dest = std::fs::canonicalize(dest).unwrap_or_else(|_| dest.to_path_buf());
+        let resolve_parent = |p: &PathBuf| match (p.parent().and_then(|d| std::fs::canonicalize(d).ok()), p.file_name()) {
+            (Some(dir), Some(name)) => dir.join(name),
+            _ => p.clone(),
+        };
+        // Full canonicalize fixes case and Unicode form; a dropped symlink resolves only its parent,
+        // so it is compared as the link, not its target.
+        let resolve = |p: &PathBuf| {
+            if p.is_symlink() { resolve_parent(p) } else { std::fs::canonicalize(p).unwrap_or_else(|_| resolve_parent(p)) }
+        };
+        // Path::starts_with compares whole components, so /a/foobar is not inside /a/foo.
+        if !sources.iter().any(|s| dest.starts_with(resolve(s))) {
+            return false;
+        }
+        self.notify_status("A folder can't be put inside itself", cx);
+        true
+    }
+
+    pub fn track_transfer_handle(
+        &mut self,
+        handle: Rc<ops::TransferHandle>,
+        label: String,
+        dest: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.transfers.push(crate::ui::transfers::TransferView {
             id: handle.id.clone(),
             label,
@@ -120,10 +222,7 @@ impl Workspace {
             return;
         }
         let dir = self.tab().location.clone();
-        self.run_op(dir, cx, move || {
-            let (results, undo) = ops::trash(&paths);
-            (results, Some(undo))
-        });
+        self.run_op(dir, cx, move || ops::trash(&paths));
     }
 
     /// Run a blocking op on the right pool, then refresh, record undo and report failures.
@@ -135,7 +234,11 @@ impl Workspace {
     ) {
         let fut = pool::for_path(&refresh).run(f);
         cx.spawn(async move |this, cx| {
-            let Some((results, undo)) = fut.await else { return };
+            let Some((results, undo)) = fut.await else {
+                // The job panicked on its worker thread; never end an operation (or undo) silently.
+                this.update(cx, |w, cx| w.notify_status("The operation failed unexpectedly", cx)).ok();
+                return;
+            };
             this.update(cx, |w, cx| {
                 let failures: Vec<String> = results
                     .iter()
@@ -148,7 +251,11 @@ impl Workspace {
                 if let Some(u) = undo {
                     w.undo_stack.push(u);
                 }
-                w.status = Some(if failures.is_empty() { "Done".into() } else { format!("{} failed: {}", failures.len(), failures.join("; ")).into() });
+                w.status = Some(if failures.is_empty() {
+                    "Done".into()
+                } else {
+                    format!("{} failed: {}", failures.len(), failures.join("; ")).into()
+                });
                 w.load(refresh, cx);
                 cx.notify();
             })
@@ -201,7 +308,13 @@ impl Workspace {
             return self.batch_rename_dialog(window, cx);
         }
         let name = e.display_name();
-        let input = cx.new(|cx| InputState::new(window, cx).default_value(name.clone()));
+        let stem = stem_len(&name, e.is_dir());
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).default_value(name.clone());
+            // Like Finder: typing replaces the name but keeps the extension.
+            state.set_selected_range(0..stem, cx);
+            state
+        });
         let this = cx.entity().downgrade();
         let path = e.path.clone();
         let first = Cell::new(true);
@@ -227,7 +340,9 @@ impl Workspace {
         let submit2 = submit.clone();
         self._subscriptions.push(cx.subscribe_in(&input, window, move |_, _, ev: &gpui_kit::component::input::InputEvent, window, cx| {
             if let gpui_kit::component::input::InputEvent::PressEnter { .. } = ev {
-                submit2(window, cx);
+                // Deferred: this runs inside a Workspace update and `submit` updates it again (abort).
+                let submit2 = submit2.clone();
+                window.defer(cx, move |window, cx| submit2(window, cx));
             }
         }));
         window.open_dialog(cx, move |dialog, window, cx| {
@@ -235,15 +350,11 @@ impl Workspace {
                 input.focus_handle(cx).focus(window, cx);
             }
             let submit = submit.clone();
-            dialog
-                .title("Rename")
-                .w(px(560.))
-                .child(field("New name", Input::new(&input)))
-                .footer(
-                    footer(cx)
-                        .child(Button::new("cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
-                        .child(Button::new("ok").primary().label("Rename").on_click(move |_, window, cx| submit(window, cx))),
-                )
+            dialog.title("Rename").w(px(560.)).child(field("New name", Input::new(&input))).footer(
+                footer(cx)
+                    .child(Button::new("cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
+                    .child(Button::new("ok").primary().label("Rename").on_click(move |_, window, cx| submit(window, cx))),
+            )
         });
     }
 
@@ -396,31 +507,37 @@ impl Workspace {
             self.notify_status("Select files or folders first", cx);
             return;
         }
+        let standards = self.standard_tags.clone();
         let this = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _, cx| {
             let p = palette(cx);
             dialog
                 .title("Tags")
                 .w(px(560.))
-                .child(div().text_color(p.muted).child(SharedString::from(format!("Apply or remove tags on {} selected item(s).", entries.len()))))
-                .child(h_flex().flex_wrap().gap_2().my_4().children(theme::TAGS.iter().map(|(name, color)| {
-                    let all = entries.iter().all(|e| e.tags.iter().any(|t| t == name));
-                    let (entries, this, name) = (entries.clone(), this.clone(), name.to_string());
+                .child(
+                    div()
+                        .text_color(p.muted)
+                        .child(SharedString::from(format!("Apply or remove tags on {} selected item(s).", entries.len()))),
+                )
+                .child(h_flex().flex_wrap().gap_2().my_4().children(standards.iter().map(|(name, rgb_color, standard)| {
+                    let all = all_have_standard_tag(&entries, standard, name);
+                    let (entries, this, name, standard) = (entries.clone(), this.clone(), *name, standard.clone());
                     Button::new(SharedString::from(format!("tag-{name}")))
                         .selected(all)
-                        .child(h_flex().gap_2().child(div().size(px(11.)).rounded_full().bg(rgb(*color))).child(name.clone()))
+                        .child(h_flex().gap_2().child(div().size(px(11.)).rounded_full().bg(rgb(*rgb_color))).child(standard.name.clone()))
                         .on_click(move |_, window, cx| {
                             window.close_dialog(cx);
-                            let (entries, name) = (entries.clone(), name.clone());
+                            let (entries, standard) = (entries.clone(), standard.clone());
                             let _ = this.update(cx, |w, cx| {
                                 let dir = w.tab().location.clone();
                                 w.run_op(dir, cx, move || {
                                     let results = entries
                                         .iter()
                                         .filter_map(|e| {
-                                            let mut t = tags::read(&e.path);
-                                            if all { t.retain(|x| x != &name) } else if !t.contains(&name) { t.push(name.clone()) }
-                                            tags::write(&e.path, &t).err().map(|err| ops::ItemResult { path: e.path.clone(), outcome: ItemOutcome::Failed(err.to_string()) })
+                                            set_standard_tag(&e.path, &standard, name, !all).err().map(|err| ops::ItemResult {
+                                                path: e.path.clone(),
+                                                outcome: ItemOutcome::Failed(err.to_string()),
+                                            })
                                         })
                                         .collect();
                                     (results, None)
@@ -446,18 +563,18 @@ impl Workspace {
                 .title("Connect to Server")
                 .w(px(560.))
                 .child(field("Server address", Input::new(&input)))
-                .child(div().text_sm().text_color(p.muted).child("macOS shows its own sign-in and mounts the share under /Volumes. Mounted shares appear in the sidebar under Network."))
-                .footer(
-                    footer(cx)
-                        .child(Button::new("cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
-                        .child(Button::new("connect").primary().label("Connect").on_click(move |_, window, cx| {
-                            let addr = input2.read(cx).value().to_string();
-                            match platform::connect_to_server(&addr) {
-                                Ok(()) => window.close_dialog(cx),
-                                Err(e) => window.push_notification(e, cx),
-                            }
-                        })),
-                )
+                .child(div().text_sm().text_color(p.muted).child(
+                    "macOS shows its own sign-in and mounts the share under /Volumes. Mounted shares appear in the sidebar under Network.",
+                ))
+                .footer(footer(cx).child(Button::new("cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx))).child(
+                    Button::new("connect").primary().label("Connect").on_click(move |_, window, cx| {
+                        let addr = input2.read(cx).value().to_string();
+                        match platform::connect_to_server(&addr) {
+                            Ok(()) => window.close_dialog(cx),
+                            Err(e) => window.push_notification(e, cx),
+                        }
+                    }),
+                ))
         });
     }
 
@@ -470,5 +587,20 @@ impl Workspace {
         let workspace = cx.entity().downgrade();
         let view = cx.new(|cx| crate::ui::batch_rename::BatchRenameView::new(paths, workspace, window, cx));
         window.open_dialog(cx, move |dialog, _, _| dialog.title("Batch Rename").w(px(720.)).child(view.clone()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stem_len;
+
+    #[test]
+    fn rename_preselects_the_stem() {
+        assert_eq!(stem_len("report.final.pdf", false), "report.final".len());
+        assert_eq!(stem_len("untitled folder", true), "untitled folder".len());
+        assert_eq!(stem_len("my.dir", true), "my.dir".len());
+        assert_eq!(stem_len(".bashrc", false), ".bashrc".len());
+        assert_eq!(stem_len("Makefile", false), "Makefile".len());
+        assert_eq!(stem_len("Grüße.txt", false), "Grüße".len());
     }
 }

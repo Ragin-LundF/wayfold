@@ -10,6 +10,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// Local UTC offset in seconds at the given Unix time (per timestamp, so DST is right).
+pub fn utc_offset(unix_secs: i64) -> i64 {
+    let t = unix_secs as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // SAFETY: both pointers are valid for the call; localtime_r is the thread-safe variant.
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() { 0 } else { tm.tm_gmtoff as i64 }
+}
+
 /// Open with the default application (F05) via LaunchServices.
 pub fn open_default(path: &Path) -> io::Result<()> {
     run_open(&[], path)

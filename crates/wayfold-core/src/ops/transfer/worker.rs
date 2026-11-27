@@ -5,10 +5,12 @@
 //! the destination folder, then delete each source entry only if it is unchanged. On error or cancel the source stays and only
 //! the temp path this task created is removed.
 
-use super::{Control, ConflictAction, TransferEvent, TransferMode, TransferRequest, TransferState, Tuning};
-use crate::ops::journal::{self, journaled, JournalOp, TEMP_PREFIX};
+use super::{ConflictAction, Control, TransferEvent, TransferMode, TransferRequest, TransferState, Tuning};
+use crate::ops::journal::{self, JournalOp, TEMP_PREFIX, journaled};
 use crate::ops::trash::move_to_trash;
-use crate::ops::{copy_name, cstr, exists, identity, rename_excl, unique_name, FileIdentity, ItemOutcome, ItemResult, RenamedItem, UndoAction};
+use crate::ops::{
+    FileIdentity, ItemOutcome, ItemResult, RenamedItem, UndoAction, copy_name, cstr, exists, identity, rename_excl, unique_name,
+};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
@@ -192,18 +194,12 @@ impl Worker {
                 TransferMode::Copy => target = copy_name(&dest, name),
             }
         }
-        if !self.needs_copy(src) {
-            self.move_by_rename(index, src, src_id, target)
-        } else {
-            self.copy_and_publish(index, src, target)
-        }
+        if !self.needs_copy(src) { self.move_by_rename(index, src, src_id, target) } else { self.copy_and_publish(index, src, target) }
     }
 
     /// Copies and moves to another volume need data copied; same-volume moves are renames.
     fn needs_copy(&self, src: &Path) -> bool {
-        self.req.mode == TransferMode::Copy
-            || self.tuning.force_copy
-            || fs::symlink_metadata(src).is_ok_and(|m| m.dev() != self.dest_dev)
+        self.req.mode == TransferMode::Copy || self.tuning.force_copy || fs::symlink_metadata(src).is_ok_and(|m| m.dev() != self.dest_dev)
     }
 
     fn move_by_rename(&mut self, index: usize, src: &Path, src_id: FileIdentity, mut target: PathBuf) -> Result<(), Stop> {
@@ -219,7 +215,8 @@ impl Worker {
                 }
                 // Created after the check: ask again, never overwrite.
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => target = to,
-                Err(e) if e.raw_os_error() == Some(libc::EXDEV) => return self.copy_and_publish(index, src, to),
+                // Already decided (and a replaced item put back): copy with the same plan, don't ask again.
+                Err(e) if e.raw_os_error() == Some(libc::EXDEV) => return self.copy_planned(index, src, (to, replace)),
                 Err(e) => {
                     self.item(ItemResult::failed(src, e));
                     return Ok(());
@@ -229,7 +226,11 @@ impl Worker {
     }
 
     fn copy_and_publish(&mut self, index: usize, src: &Path, target: PathBuf) -> Result<(), Stop> {
-        let Some((mut to, mut replace)) = self.decide(src, target)? else { return Ok(()) };
+        let Some(plan) = self.decide(src, target)? else { return Ok(()) };
+        self.copy_planned(index, src, plan)
+    }
+
+    fn copy_planned(&mut self, index: usize, src: &Path, (mut to, mut replace): WritePlan) -> Result<(), Stop> {
         let temp = self.req.dest_dir.join(format!("{TEMP_PREFIX}{}-{index}", self.id));
         let op = if self.req.mode == TransferMode::Move { JournalOp::Move } else { JournalOp::Copy };
         let jid = match journal::intent(op, src, &to, &temp) {
@@ -317,7 +318,13 @@ impl Worker {
     /// first; if the rename then fails it is put back, or the error says where it is.
     fn publish(&self, from: &Path, to: &Path, replace: Option<FileIdentity>) -> io::Result<()> {
         let trashed = trash_replaced(to, replace)?;
-        let placed = if self.tuning.fail_publish { Err(io::Error::other("simulated publish failure")) } else { rename_excl(from, to) };
+        let placed = if self.tuning.fail_publish {
+            Err(io::Error::other("simulated publish failure"))
+        } else if self.tuning.exdev_once.replace(false) {
+            Err(io::Error::from_raw_os_error(libc::EXDEV))
+        } else {
+            rename_excl(from, to)
+        };
         let (Err(e), Some(trashed)) = (&placed, trashed) else { return placed };
         if journaled(JournalOp::Restore, &trashed, to, || rename_excl(&trashed, to)).is_ok() {
             return placed;

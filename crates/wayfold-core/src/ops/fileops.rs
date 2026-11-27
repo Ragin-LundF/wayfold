@@ -1,10 +1,10 @@
 //! Single file operations (F02): create, rename, duplicate, trash/restore, symlink.
 
-use super::journal::{self, journaled, JournalOp, HOP_PREFIX};
+use super::journal::{self, HOP_PREFIX, JournalOp, journaled};
 use super::trash::move_to_trash;
 use super::{
-    identity, next_id, rename_excl, start_transfer, validate_name, FileIdentity, ItemOutcome, ItemResult,
-    RenamedItem, TransferHandle, TransferMode, TransferRequest, TrashedItem, UndoAction,
+    FileIdentity, ItemOutcome, ItemResult, RenamedItem, TransferHandle, TransferMode, TransferRequest, TrashedItem, UndoAction, identity,
+    next_id, rename_excl, start_transfer, validate_name,
 };
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -21,9 +21,7 @@ pub fn create_folder(parent: &Path, name: &OsStr) -> io::Result<(PathBuf, UndoAc
 /// Creates an empty file; fails if the name exists.
 pub fn create_file(parent: &Path, name: &OsStr) -> io::Result<(PathBuf, UndoAction)> {
     let path = child(parent, name)?;
-    journaled(JournalOp::CreateFile, &path, &path, || {
-        OpenOptions::new().write(true).create_new(true).open(&path).map(drop)
-    })?;
+    journaled(JournalOp::CreateFile, &path, &path, || OpenOptions::new().write(true).create_new(true).open(&path).map(drop))?;
     Ok((path.clone(), created(&path)?))
 }
 
@@ -54,7 +52,8 @@ pub fn duplicate(path: &Path) -> TransferHandle {
     start_transfer(TransferRequest { mode: TransferMode::Copy, sources: vec![path.to_path_buf()], dest_dir })
 }
 
-pub fn trash(paths: &[PathBuf]) -> (Vec<ItemResult>, UndoAction) {
+/// The undo action covers only the items that reached the Trash; `None` when none did.
+pub fn trash(paths: &[PathBuf]) -> (Vec<ItemResult>, Option<UndoAction>) {
     let mut trashed = Vec::new();
     let results = paths
         .iter()
@@ -73,7 +72,8 @@ pub fn trash(paths: &[PathBuf]) -> (Vec<ItemResult>, UndoAction) {
             }
         })
         .collect();
-    (results, UndoAction::Trashed(trashed))
+    let undo = (!trashed.is_empty()).then_some(UndoAction::Trashed(trashed));
+    (results, undo)
 }
 
 /// Moves a trashed item back if it is unchanged and its original path is free.
@@ -83,9 +83,7 @@ pub fn restore(item: &TrashedItem) -> ItemResult {
     }
     match journaled(JournalOp::Restore, &item.trashed, &item.original, || rename_excl(&item.trashed, &item.original)) {
         Ok(()) => ItemResult::new(&item.original, ItemOutcome::Done(item.original.clone())),
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            ItemResult::failed(&item.original, "the original location is occupied")
-        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => ItemResult::failed(&item.original, "the original location is occupied"),
         Err(e) => ItemResult::failed(&item.original, e),
     }
 }
@@ -218,7 +216,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let a = t.path().join("a");
         fs::write(&a, b"old").unwrap();
-        let (_, UndoAction::Trashed(items)) = trash(std::slice::from_ref(&a)) else { unreachable!() };
+        let (_, Some(UndoAction::Trashed(items))) = trash(std::slice::from_ref(&a)) else { unreachable!() };
         fs::write(&a, b"new").unwrap();
         assert!(matches!(restore(&items[0]).outcome, ItemOutcome::Failed(_)));
         assert_eq!(fs::read(&a).unwrap(), b"new");

@@ -15,8 +15,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use wayfold_core::pool;
 use wayfold_core::terminal::{
-    CellStyle, FollowController, FollowMode, Integration, KeyMods, PromptState, Session,
-    SessionConfig, TerminalSnapshot, encode_key,
+    CellStyle, FollowController, FollowMode, Integration, KeyMods, PromptState, Session, SessionConfig, TerminalSnapshot, encode_key,
 };
 
 mod colors {
@@ -30,11 +29,8 @@ mod colors {
 
 const FONT_SIZE: f32 = 12.;
 const LINE_HEIGHT: f32 = 16.;
-const MODES: [(FollowMode, &str); 3] = [
-    (FollowMode::Independent, "Independent"),
-    (FollowMode::FollowBrowser, "Follow browser"),
-    (FollowMode::TwoWay, "Two-way"),
-];
+const MODES: [(FollowMode, &str); 3] =
+    [(FollowMode::Independent, "Independent"), (FollowMode::FollowBrowser, "Follow browser"), (FollowMode::TwoWay, "Two-way")];
 
 pub enum TerminalPanelEvent {
     Hide,
@@ -76,20 +72,15 @@ impl Focusable for TerminalPanel {
 impl TerminalPanel {
     pub fn new(start_dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let labels = MODES.iter().map(|(_, label)| *label).collect();
-        let mode_select =
-            cx.new(|cx| SelectState::new(labels, Some(IndexPath::default()), window, cx));
-        let subscription = cx.subscribe_in(
-            &mode_select,
-            window,
-            |this, _, event: &SelectEvent<Vec<&'static str>>, _, cx| {
-                let SelectEvent::Confirm(Some(label)) = event else {
-                    return;
-                };
-                if let Some((mode, _)) = MODES.iter().find(|(_, l)| l == label) {
-                    this.set_mode(*mode, cx);
-                }
-            },
-        );
+        let mode_select = cx.new(|cx| SelectState::new(labels, Some(IndexPath::default()), window, cx));
+        let subscription = cx.subscribe_in(&mode_select, window, |this, _, event: &SelectEvent<Vec<&'static str>>, _, cx| {
+            let SelectEvent::Confirm(Some(label)) = event else {
+                return;
+            };
+            if let Some((mode, _)) = MODES.iter().find(|(_, l)| l == label) {
+                this.set_mode(*mode, cx);
+            }
+        });
         // Deferred so a `set_shell_integration` right after construction applies to the first shell.
         cx.defer_in(window, |this, window, cx| this.add_session(true, window, cx));
         Self {
@@ -146,31 +137,17 @@ impl TerminalPanel {
     /// while the panel hides).
     fn add_session(&mut self, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_spawns += 1;
-        let config = SessionConfig {
-            cwd: self.browser_path.clone(),
-            shell: None,
-            shell_integration: self.shell_integration,
-            rows: 12,
-            cols: 100,
-        };
+        let config =
+            SessionConfig { cwd: self.browser_path.clone(), shell: None, shell_integration: self.shell_integration, rows: 12, cols: 100 };
         let spawned = pool::for_path(&config.cwd).run(move || Session::spawn(config));
         cx.spawn_in(window, async move |this, cx| {
             let result = spawned.await.unwrap_or_else(|| Err(std::io::Error::other("worker stopped")));
-            this.update_in(cx, |panel, window, cx| {
-                panel.session_spawned(result, focus, window, cx)
-            })
-            .ok();
+            this.update_in(cx, |panel, window, cx| panel.session_spawned(result, focus, window, cx)).ok();
         })
         .detach();
     }
 
-    fn session_spawned(
-        &mut self,
-        result: std::io::Result<Session>,
-        focus: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn session_spawned(&mut self, result: std::io::Result<Session>, focus: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_spawns -= 1;
         let session = match result {
             Ok(session) => {
@@ -188,21 +165,13 @@ impl TerminalPanel {
         let changes = session.changes();
         let task = cx.spawn(async move |this, cx| {
             while changes.recv().await.is_ok() {
-                if this
-                    .update(cx, |panel, cx| panel.session_changed(id, cx))
-                    .is_err()
-                {
+                if this.update(cx, |panel, cx| panel.session_changed(id, cx)).is_err() {
                     break;
                 }
             }
         });
         let follow = FollowController::new(session.integration());
-        self.tabs.push(TerminalTab {
-            id,
-            session,
-            follow,
-            _changes: task,
-        });
+        self.tabs.push(TerminalTab { id, session, follow, _changes: task });
         self.activate(self.tabs.len() - 1, window, cx);
         if focus {
             self.focus_handle.focus(window, cx);
@@ -226,14 +195,9 @@ impl TerminalPanel {
 
     fn activate(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active = index;
-        let mode = self
-            .tabs
-            .get(index)
-            .map_or(FollowMode::Independent, |tab| tab.follow.mode());
+        let mode = self.tabs.get(index).map_or(FollowMode::Independent, |tab| tab.follow.mode());
         let row = MODES.iter().position(|(m, _)| *m == mode).unwrap_or(0);
-        self.mode_select.update(cx, |select, cx| {
-            select.set_selected_index(Some(IndexPath::default().row(row)), window, cx)
-        });
+        self.mode_select.update(cx, |select, cx| select.set_selected_index(Some(IndexPath::default().row(row)), window, cx));
         cx.notify();
     }
 
@@ -280,18 +244,8 @@ impl TerminalPanel {
             cx.stop_propagation();
             return;
         }
-        let mods = KeyMods {
-            control: modifiers.control,
-            alt: modifiers.alt,
-            shift: modifiers.shift,
-            platform: modifiers.platform,
-        };
-        if let Some(bytes) = encode_key(
-            &keystroke.key,
-            keystroke.key_char.as_deref(),
-            mods,
-            tab.session.app_cursor(),
-        ) {
+        let mods = KeyMods { control: modifiers.control, alt: modifiers.alt, shift: modifiers.shift, platform: modifiers.platform };
+        if let Some(bytes) = encode_key(&keystroke.key, keystroke.key_char.as_deref(), mods, tab.session.app_cursor()) {
             tab.follow.on_user_input(&bytes);
             tab.session.write(bytes);
             cx.stop_propagation();
@@ -317,12 +271,8 @@ impl TerminalPanel {
             Integration::Unsupported(reason) => Some(SharedString::from(reason.clone())),
             Integration::Supported(_) => None,
         });
-        let cwd = tab
-            .and_then(|tab| tab.follow.cwd().map(display_path))
-            .unwrap_or_default();
-        let status = tab
-            .map(|tab| prompt_status(&tab.follow))
-            .unwrap_or_default();
+        let cwd = tab.and_then(|tab| tab.follow.cwd().map(display_path)).unwrap_or_default();
+        let status = tab.map(|tab| prompt_status(&tab.follow)).unwrap_or_default();
         let sync_path = self.browser_path.clone();
 
         h_flex()
@@ -336,46 +286,19 @@ impl TerminalPanel {
             .text_sm()
             .child(div().font_weight(FontWeight::BOLD).child("Terminal"))
             .child(self.render_session_tabs(cx))
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(rgb(colors::MUTED))
-                    .child(cwd),
-            )
+            .child(div().min_w_0().truncate().text_color(rgb(colors::MUTED)).child(cwd))
             .child(div().flex_1())
-            .when_some(self.error.clone(), |row, error| {
-                row.child(div().text_color(rgb(colors::MUTED)).child(error))
-            })
-            .when_some(unsupported.clone(), |row, reason| {
-                row.child(
-                    div()
-                        .truncate()
-                        .text_color(rgb(colors::MUTED))
-                        .child(reason),
-                )
-            })
+            .when_some(self.error.clone(), |row, error| row.child(div().text_color(rgb(colors::MUTED)).child(error)))
+            .when_some(unsupported.clone(), |row, reason| row.child(div().truncate().text_color(rgb(colors::MUTED)).child(reason)))
             .child(div().text_color(rgb(colors::ACCENT)).child(status))
-            .child(
-                div()
-                    .text_color(rgb(colors::MUTED))
-                    .child(format!("Bound to {}", self.binding_label)),
-            )
-            .child(
-                Select::new(&self.mode_select)
-                    .small()
-                    .w(px(140.))
-                    .accessibility_label("Follow mode")
-                    .disabled(unsupported.is_some()),
-            )
+            .child(div().text_color(rgb(colors::MUTED)).child(format!("Bound to {}", self.binding_label)))
+            .child(Select::new(&self.mode_select).small().w(px(140.)).accessibility_label("Follow mode").disabled(unsupported.is_some()))
             .child(
                 Button::new("terminal-sync-now")
                     .small()
                     .label("Sync now")
                     .disabled(unsupported.is_some())
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.sync_now(sync_path.clone(), cx)),
-                    ),
+                    .on_click(cx.listener(move |this, _, _, cx| this.sync_now(sync_path.clone(), cx))),
             )
             .child(
                 Button::new("terminal-close")
@@ -391,20 +314,14 @@ impl TerminalPanel {
         h_flex()
             .gap_1()
             .children(self.tabs.iter().enumerate().map(|(index, tab)| {
-                let exited = if tab.session.is_exited() {
-                    " (exited)"
-                } else {
-                    ""
-                };
+                let exited = if tab.session.is_exited() { " (exited)" } else { "" };
                 h_flex()
                     .child(
                         Button::new(("terminal-tab", tab.id))
                             .xsmall()
                             .label(format!("{}{exited}", index + 1))
                             .when(index == self.active, |button| button.primary())
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.activate(index, window, cx)
-                            })),
+                            .on_click(cx.listener(move |this, _, window, cx| this.activate(index, window, cx))),
                     )
                     .child(
                         Button::new(("terminal-tab-close", tab.id))
@@ -412,9 +329,7 @@ impl TerminalPanel {
                             .ghost()
                             .label("×")
                             .tooltip("Close session")
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.close_session(index, window, cx)
-                            })),
+                            .on_click(cx.listener(move |this, _, window, cx| this.close_session(index, window, cx))),
                     )
             }))
             .child(
@@ -429,14 +344,7 @@ impl TerminalPanel {
 
     fn render_grid(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let family = cx.theme().mono_font_family.clone();
-        let mut grid = div()
-            .id("terminal-grid")
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .px_2()
-            .py_1();
+        let mut grid = div().id("terminal-grid").relative().flex_1().min_h_0().overflow_hidden().px_2().py_1();
         let Some(tab) = self.tabs.get(self.active) else {
             return grid;
         };
@@ -448,9 +356,7 @@ impl TerminalPanel {
                 move |bounds, window, _| {
                     let text_system = window.text_system();
                     let font_id = text_system.resolve_font(&measure_font);
-                    let cell_width = text_system
-                        .advance(font_id, px(FONT_SIZE), 'M')
-                        .map_or(px(7.), |size| size.width);
+                    let cell_width = text_system.advance(font_id, px(FONT_SIZE), 'M').map_or(px(7.), |size| size.width);
                     let cols = (bounds.size.width / cell_width).floor().max(1.) as u16;
                     let rows = (bounds.size.height / px(LINE_HEIGHT)).floor().max(1.) as u16;
                     session.resize(rows, cols);
@@ -466,40 +372,26 @@ impl TerminalPanel {
 
 impl Render for TerminalPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        v_flex()
-            .size_full()
-            .bg(rgb(colors::TERMINAL_BG))
-            .text_color(rgb(colors::TEXT))
-            .child(self.render_header(cx))
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_col()
-                    .track_focus(&self.focus_handle)
-                    .key_context("Terminal")
-                    .on_key_down(cx.listener(Self::on_key_down))
-                    .on_scroll(cx.listener(Self::on_scroll))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| this.focus_handle.focus(window, cx)),
-                    )
-                    .child(self.render_grid(cx)),
-            )
+        v_flex().size_full().bg(rgb(colors::TERMINAL_BG)).text_color(rgb(colors::TEXT)).child(self.render_header(cx)).child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_col()
+                .track_focus(&self.focus_handle)
+                .key_context("Terminal")
+                .on_key_down(cx.listener(Self::on_key_down))
+                .on_scroll(cx.listener(Self::on_scroll))
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _, window, cx| this.focus_handle.focus(window, cx)))
+                .child(self.render_grid(cx)),
+        )
     }
 }
 
 fn prompt_status(follow: &FollowController) -> String {
-    let busy = if follow.prompt_state() == PromptState::Busy {
-        "Busy"
-    } else {
-        ""
-    };
+    let busy = if follow.prompt_state() == PromptState::Busy { "Busy" } else { "" };
     match follow.queued() {
-        Some(path) => format!("{busy} Waiting to cd {}", display_path(path))
-            .trim()
-            .to_owned(),
+        Some(path) => format!("{busy} Waiting to cd {}", display_path(path)).trim().to_owned(),
         None => busy.to_owned(),
     }
 }
@@ -515,9 +407,7 @@ fn snapshot_rows(snapshot: &TerminalSnapshot, family: &SharedString) -> Vec<AnyE
         .iter()
         .enumerate()
         .map(|(row_index, row)| {
-            let cursor_col = cursor
-                .filter(|(row, _)| *row == row_index)
-                .map(|(_, col)| col);
+            let cursor_col = cursor.filter(|(row, _)| *row == row_index).map(|(_, col)| col);
             let mut text = String::with_capacity(row.len());
             let mut runs: Vec<TextRun> = Vec::new();
             let mut current: Option<(CellStyle, usize)> = None;
@@ -573,11 +463,51 @@ fn text_run(style: CellStyle, len: usize, family: &SharedString) -> TextRun {
         font: run_font,
         color: rgb(fg).into(),
         background_color: bg.map(|bg| rgb(bg).into()),
-        underline: style.underline.then(|| UnderlineStyle {
-            thickness: px(1.),
-            color: None,
-            wavy: false,
-        }),
+        underline: style.underline.then(|| UnderlineStyle { thickness: px(1.), color: None, wavy: false }),
         strikethrough: None,
+    }
+}
+
+/// Test seam: the headless UI tests read follow state and the screen, and pick a mode the way
+/// the dropdown does.
+#[cfg(test)]
+impl TerminalPanel {
+    pub(crate) fn choose_mode(&self, label: &'static str, cx: &mut App) {
+        self.mode_select.update(cx, |_, cx| cx.emit(SelectEvent::Confirm(Some(label))));
+    }
+
+    pub(crate) fn active_follow(&self) -> Option<&FollowController> {
+        self.tabs.get(self.active).map(|tab| &tab.follow)
+    }
+
+    /// The active session's text, scrollback included. The session only shows one screen, so this
+    /// scrolls to the top and back down a line at a time; the live screen is reached when the view,
+    /// cursor included, equals the one taken at the bottom.
+    pub(crate) fn active_text(&self) -> String {
+        use wayfold_core::terminal::SCROLLBACK_LINES;
+        let Some(tab) = self.tabs.get(self.active) else {
+            return String::new();
+        };
+        let session = &tab.session;
+        let view_key = |view: &TerminalSnapshot| (view.text_lines(), view.cursor);
+        let live = view_key(&session.snapshot());
+        session.scroll(SCROLLBACK_LINES as i32);
+        let mut view = session.snapshot();
+        let mut lines = view.text_lines();
+        let mut steps = 0;
+        while view_key(&view) != live {
+            assert!(steps < SCROLLBACK_LINES, "the live screen changed while reading the scrollback");
+            session.scroll(-1);
+            view = session.snapshot();
+            lines.extend(view.text_lines().pop());
+            steps += 1;
+        }
+        lines.join("\n")
+    }
+
+    /// Drops every session (killing its shell) without spawning a new one, unlike closing the last tab.
+    pub(crate) fn close_all_sessions(&mut self, cx: &mut Context<Self>) {
+        self.tabs.clear();
+        cx.notify();
     }
 }

@@ -1,7 +1,7 @@
 //! Every user command is a GPUI action, so the keymap, menus, context menus and the
 //! command palette dispatch the same thing.
 
-use gpui_kit::{actions, App, KeyBinding, Menu, MenuItem, OsAction};
+use gpui_kit::{App, KeyBinding, Menu, MenuItem, OsAction, actions};
 
 actions!(
     wayfold,
@@ -35,6 +35,7 @@ actions!(
         SortByModified,
         ToggleGroupByKind,
         ToggleExtensions,
+        ToggleFoldersFirst,
         ToggleSizeColumn,
         ToggleKindColumn,
         ToggleModifiedColumn,
@@ -44,6 +45,14 @@ actions!(
         SelectPrev,
         ExtendNext,
         ExtendPrev,
+        SelectFirst,
+        SelectLast,
+        ExtendFirst,
+        ExtendLast,
+        SelectPageDown,
+        SelectPageUp,
+        ExtendPageDown,
+        ExtendPageUp,
         SelectLeft,
         SelectRight,
         // Clipboard and files (F01/F02/F05)
@@ -130,6 +139,15 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", SelectPrev, b),
         KeyBinding::new("shift-down", ExtendNext, b),
         KeyBinding::new("shift-up", ExtendPrev, b),
+        KeyBinding::new("home", SelectFirst, b),
+        KeyBinding::new("end", SelectLast, b),
+        KeyBinding::new("shift-home", ExtendFirst, b),
+        KeyBinding::new("shift-end", ExtendLast, b),
+        // Fn+Down/Up on Mac keyboards.
+        KeyBinding::new("pagedown", SelectPageDown, b),
+        KeyBinding::new("pageup", SelectPageUp, b),
+        KeyBinding::new("shift-pagedown", ExtendPageDown, b),
+        KeyBinding::new("shift-pageup", ExtendPageUp, b),
         KeyBinding::new("left", SelectLeft, b),
         KeyBinding::new("right", SelectRight, b),
         KeyBinding::new("cmd-c", CopyItems, b),
@@ -216,6 +234,7 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::action("Sort by Kind", SortByKind),
                 MenuItem::action("Sort by Date Modified", SortByModified),
                 MenuItem::action("Group by Kind", ToggleGroupByKind),
+                MenuItem::action("Folders First", ToggleFoldersFirst),
                 MenuItem::separator(),
                 MenuItem::action("Show/Hide File Extensions", ToggleExtensions),
                 MenuItem::action("Show/Hide Size Column", ToggleSizeColumn),
@@ -248,10 +267,7 @@ pub fn set_menus(cx: &mut App) {
         },
         Menu {
             name: "Tools".into(),
-            items: vec![
-                MenuItem::action("Compare Folders…", CompareFolders),
-                MenuItem::action("Analyze Disk Usage…", AnalyzeDiskUsage),
-            ],
+            items: vec![MenuItem::action("Compare Folders…", CompareFolders), MenuItem::action("Analyze Disk Usage…", AnalyzeDiskUsage)],
             disabled: false,
         },
     ]);
@@ -275,6 +291,7 @@ pub fn palette_commands() -> Vec<(&'static str, Box<dyn gpui_kit::Action>)> {
         ("Sort by Kind", Box::new(SortByKind)),
         ("Sort by Date Modified", Box::new(SortByModified)),
         ("Group by Kind", Box::new(ToggleGroupByKind)),
+        ("Toggle Folders First", Box::new(ToggleFoldersFirst)),
         ("Show/Hide File Extensions", Box::new(ToggleExtensions)),
         ("Show/Hide Size Column", Box::new(ToggleSizeColumn)),
         ("Show/Hide Kind Column", Box::new(ToggleKindColumn)),

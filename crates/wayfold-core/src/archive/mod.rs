@@ -167,7 +167,10 @@ pub enum ArchiveError {
     PasswordRequired,
     WrongPassword,
     /// An entry would escape the destination or is a special file.
-    Unsafe { entry: String, reason: &'static str },
+    Unsafe {
+        entry: String,
+        reason: &'static str,
+    },
     LimitExceeded(String),
     Corrupt(String),
     Io(String),
@@ -247,10 +250,7 @@ pub fn start_create(req: CreateRequest) -> ArchiveJob {
 
 type ProgressFn<'a> = &'a (dyn Fn(Progress) + Sync);
 
-fn spawn_job(
-    dir: &Path,
-    job: impl FnOnce(&CancelToken, ProgressFn) -> Result<PathBuf, ArchiveError> + Send + 'static,
-) -> ArchiveJob {
+fn spawn_job(dir: &Path, job: impl FnOnce(&CancelToken, ProgressFn) -> Result<PathBuf, ArchiveError> + Send + 'static) -> ArchiveJob {
     let (tx, rx) = async_channel::unbounded();
     let cancel = CancelToken::new();
     let token = cancel.clone();

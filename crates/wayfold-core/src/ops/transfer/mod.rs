@@ -1,8 +1,8 @@
 //! Copy/move transfers (F03) on the worker pools, with events for the transfer drawer.
 
-mod worker;
 #[cfg(test)]
 mod tests;
+mod worker;
 
 use super::{ItemResult, UndoAction};
 use std::path::PathBuf;
@@ -61,11 +61,21 @@ pub struct ConflictResolution {
 pub enum TransferEvent {
     State(TransferState),
     /// Planning finished; before this the drawer shows indeterminate progress.
-    Totals { bytes: u64, items: u64 },
+    Totals {
+        bytes: u64,
+        items: u64,
+    },
     /// At most ~10 per second; bytes count inside files.
-    Progress { bytes_done: u64, items_done: u64, current: PathBuf },
+    Progress {
+        bytes_done: u64,
+        items_done: u64,
+        current: PathBuf,
+    },
     /// The worker waits for `TransferHandle::resolve`.
-    Conflict { source: PathBuf, existing: PathBuf },
+    Conflict {
+        source: PathBuf,
+        existing: PathBuf,
+    },
     /// Outcome of a top-level source, or a nested entry that failed or was skipped.
     Item(ItemResult),
     /// Moves only, sent before the final state: sources fully moved (clear their cut marks).
@@ -112,11 +122,20 @@ pub(crate) struct Tuning {
     pub fail_publish: bool,
     /// Use the copy-then-delete path for moves even on one volume (simulates cross-volume).
     pub force_copy: bool,
+    /// The next rename into place fails with `EXDEV` (a rename across a firmlink or mount).
+    pub exdev_once: std::cell::Cell<bool>,
 }
 
 impl Default for Tuning {
     fn default() -> Self {
-        Self { chunk: 1 << 20, chunk_delay: Duration::ZERO, fail_write_after: None, fail_publish: false, force_copy: false }
+        Self {
+            chunk: 1 << 20,
+            chunk_delay: Duration::ZERO,
+            fail_write_after: None,
+            fail_publish: false,
+            force_copy: false,
+            exdev_once: Default::default(),
+        }
     }
 }
 

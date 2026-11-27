@@ -50,10 +50,7 @@ impl Pool {
     }
 
     /// Run `f` on the pool and await its result from async (GPUI foreground) code.
-    pub fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(
-        &self,
-        f: F,
-    ) -> impl Future<Output = Option<T>> + use<T, F> {
+    pub fn run<T: Send + 'static, F: FnOnce() -> T + Send + 'static>(&self, f: F) -> impl Future<Output = Option<T>> + use<T, F> {
         let (tx, rx) = async_channel::bounded(1);
         self.execute(move || {
             let _ = tx.send_blocking(f());
@@ -82,9 +79,5 @@ pub fn cpu() -> &'static Pool {
 
 /// Pick the pool for a path: network mounts get the isolated pool.
 pub fn for_path(path: &std::path::Path) -> &'static Pool {
-    if crate::fs::is_network_path(path) {
-        remote()
-    } else {
-        local()
-    }
+    if crate::fs::is_network_path(path) { remote() } else { local() }
 }

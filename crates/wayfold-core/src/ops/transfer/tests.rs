@@ -1,7 +1,7 @@
 use super::*;
-use crate::ops::{duplicate, test_env, undo, ItemOutcome};
+use crate::ops::{ItemOutcome, duplicate, test_env, undo};
 use std::fs;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
 
 fn req(mode: TransferMode, sources: &[&Path], dest: &Path) -> TransferRequest {
@@ -102,6 +102,11 @@ fn f03_rejects_folder_into_itself_and_missing_source() {
     assert_eq!(final_state(&ev), TransferState::Failed);
     assert!(items(&ev).iter().all(|r| matches!(r.outcome, ItemOutcome::Failed(_))));
     assert!(dir.join("sub").is_dir());
+
+    let ev = drain(&start_transfer(req(TransferMode::Copy, &[&dir], &dir.join("sub"))), |_, _| {});
+    assert_eq!(final_state(&ev), TransferState::Failed);
+    assert!(matches!(&items(&ev)[0].outcome, ItemOutcome::Failed(why) if why.contains("inside itself")), "{ev:?}");
+    assert!(!dir.join("sub/dir").exists());
 }
 
 #[test]
@@ -406,6 +411,27 @@ fn f03_replace_publish_failure_puts_the_existing_item_back() {
         assert_eq!(fs::read(&src).unwrap(), b"new", "{mode:?}: the source is kept");
         assert_eq!(names(d.path()), vec!["a"], "{mode:?}: no temp left");
     }
+}
+
+#[test]
+fn f03_move_falling_back_to_copy_after_exdev_asks_once() {
+    test_env();
+    let (s, d) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let src = s.path().join("a");
+    fs::write(&src, b"new").unwrap();
+    fs::write(d.path().join("a"), b"old").unwrap();
+    let tuning = Tuning { exdev_once: true.into(), ..Tuning::default() };
+    let mut asked = 0;
+    let ev = drain(&start_with(req(TransferMode::Move, &[&src], d.path()), tuning), |e, h| {
+        if matches!(e, TransferEvent::Conflict { .. }) {
+            asked += 1;
+            h.resolve(ConflictResolution { action: ConflictAction::Replace, apply_to_remaining: false });
+        }
+    });
+    assert_eq!(final_state(&ev), TransferState::Completed, "{ev:?}");
+    assert_eq!(asked, 1, "{ev:?}");
+    assert_eq!(fs::read(d.path().join("a")).unwrap(), b"new");
+    assert!(!src.exists());
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! Format readers: one entry visitor for streamable formats (ZIP, TAR family, GZ, ZST, 7z),
 //! RAR through `unrar`'s header cursor, plus listing and bounded previews.
 
-use super::{output_name, ArchiveEntry, ArchiveError, ArchiveFormat, EntryKind, Listing};
+use super::{ArchiveEntry, ArchiveError, ArchiveFormat, EntryKind, Listing, output_name};
 use crate::pool::CancelToken;
 use std::fs::File;
 use std::io::{self, BufReader, Read};
@@ -292,7 +292,8 @@ pub fn list_entries(path: &Path, password: Option<&str>, cancel: &CancelToken) -
                 } else {
                     zf.unix_mode().and_then(kind_from_mode).unwrap_or(EntryKind::File)
                 };
-                let e = ArchiveEntry { name: zf.name().map_err(zip_err)?.into_owned(), kind, size: Some(zf.size()), encrypted: zf.encrypted() };
+                let e =
+                    ArchiveEntry { name: zf.name().map_err(zip_err)?.into_owned(), kind, size: Some(zf.size()), encrypted: zf.encrypted() };
                 if !push(e)? {
                     break;
                 }
@@ -301,7 +302,12 @@ pub fn list_entries(path: &Path, password: Option<&str>, cancel: &CancelToken) -
         ArchiveFormat::SevenZ => {
             let archive = sevenz_rust2::Archive::open_with_password(path, &sevenz_password(password)).map_err(sevenz_err)?;
             for (i, f) in archive.files.iter().enumerate() {
-                let e = ArchiveEntry { name: f.name().to_string(), kind: sevenz_kind(f), size: Some(f.size()), encrypted: archive.is_file_encrypted(i) };
+                let e = ArchiveEntry {
+                    name: f.name().to_string(),
+                    kind: sevenz_kind(f),
+                    size: Some(f.size()),
+                    encrypted: archive.is_file_encrypted(i),
+                };
                 if !push(e)? {
                     break;
                 }

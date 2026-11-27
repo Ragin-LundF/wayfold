@@ -1,7 +1,7 @@
 //! Preferences, session and favorites as small JSON files written atomically
 //! (temp file + fsync + rename) in ~/Library/Application Support/Wayfold.
 
-use serde::{de::DeserializeOwned, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use std::fs;
 use std::io::{self, Write};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -28,8 +28,12 @@ pub fn load<T: DeserializeOwned + Default>(name: &str) -> T {
 }
 
 pub fn save<T: Serialize>(name: &str, value: &T) -> io::Result<()> {
-    let dir = data_dir();
-    fs::create_dir_all(&dir)?;
+    save_in(&data_dir(), name, value)
+}
+
+/// Like `save`, into a dir resolved by the caller (e.g. on the UI thread before handing off to a pool).
+pub fn save_in<T: Serialize>(dir: &Path, name: &str, value: &T) -> io::Result<()> {
+    fs::create_dir_all(dir)?;
     let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
     write_atomic(&dir.join(format!("{name}.json")), &bytes)
 }

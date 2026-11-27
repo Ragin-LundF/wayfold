@@ -67,11 +67,7 @@ impl FollowController {
 
     /// Sync modes need integration; without it the mode stays independent.
     pub fn set_mode(&mut self, mode: FollowMode) {
-        self.mode = if self.shell.is_some() {
-            mode
-        } else {
-            FollowMode::Independent
-        };
+        self.mode = if self.shell.is_some() { mode } else { FollowMode::Independent };
         if self.mode == FollowMode::Independent {
             self.queued = None;
         }
@@ -116,9 +112,7 @@ impl FollowController {
     /// Call with every byte sequence written to the terminal for the user (keys and pastes,
     /// as sent, so a bracketed paste keeps its markers).
     pub fn on_user_input(&mut self, bytes: &[u8]) {
-        let line_break = bytes
-            .iter()
-            .rposition(|&b| b == b'\r' || b == b'\n' || b == 0x03);
+        let line_break = bytes.iter().rposition(|&b| b == b'\r' || b == b'\n' || b == 0x03);
         match line_break {
             Some(index) => {
                 // Enter or Ctrl-C: a command may be starting; text after the last break
@@ -136,8 +130,7 @@ impl FollowController {
             // A running command printed it (only a signed `D` ends a command), or it is the
             // `B` of the prompt that just received our cd, which is still pending.
             ShellEvent::PromptStart | ShellEvent::InputStart
-                if self.prompt == PromptState::Busy
-                    || (event == ShellEvent::InputStart && self.injected.is_some()) =>
+                if self.prompt == PromptState::Busy || (event == ShellEvent::InputStart && self.injected.is_some()) =>
             {
                 FollowOutput::default()
             }
@@ -148,10 +141,7 @@ impl FollowController {
                 }
                 // A dirty line stays dirty: text typed while busy lands in the new prompt.
                 self.prompt = PromptState::Idle;
-                FollowOutput {
-                    write: self.flush(),
-                    user_cwd: None,
-                }
+                FollowOutput { write: self.flush(), user_cwd: None }
             }
             ShellEvent::CommandStart => {
                 self.prompt = PromptState::Busy;
@@ -167,20 +157,14 @@ impl FollowController {
 
     fn on_cwd(&mut self, path: PathBuf) -> FollowOutput {
         let previous = self.cwd.replace(path.clone());
-        let from_injection = self
-            .injected
-            .as_ref()
-            .is_some_and(|injected| same_dir(injected, &path));
+        let from_injection = self.injected.as_ref().is_some_and(|injected| same_dir(injected, &path));
         if from_injection {
             self.injected = None;
             return FollowOutput::default();
         }
         let changed = previous.is_some_and(|previous| !same_dir(&previous, &path));
         let user_cwd = (changed && self.mode == FollowMode::TwoWay).then_some(path);
-        FollowOutput {
-            write: None,
-            user_cwd,
-        }
+        FollowOutput { write: None, user_cwd }
     }
 
     fn flush(&mut self) -> Option<Vec<u8>> {
@@ -208,14 +192,7 @@ fn without_private_prefix(path: &Path) -> &Path {
         return path;
     };
     let rest = Path::new(OsStr::from_bytes(rest));
-    if ["/tmp", "/var", "/etc"]
-        .iter()
-        .any(|dir| rest.starts_with(dir))
-    {
-        rest
-    } else {
-        path
-    }
+    if ["/tmp", "/var", "/etc"].iter().any(|dir| rest.starts_with(dir)) { rest } else { path }
 }
 
 #[cfg(test)]
@@ -234,10 +211,7 @@ mod tests {
     #[test]
     fn idle_prompt_gets_cd_immediately() {
         let mut follow = idle_zsh(FollowMode::FollowBrowser);
-        assert_eq!(
-            follow.browser_moved("/a b".into()),
-            Some(b"cd -- $'/a b'\r".to_vec())
-        );
+        assert_eq!(follow.browser_moved("/a b".into()), Some(b"cd -- $'/a b'\r".to_vec()));
         assert_eq!(follow.prompt_state(), PromptState::Unknown);
     }
 
@@ -250,14 +224,8 @@ mod tests {
         assert_eq!(follow.browser_moved("/one".into()), None);
         assert_eq!(follow.browser_moved("/two".into()), None);
         assert_eq!(follow.queued(), Some(Path::new("/two")));
-        assert_eq!(
-            follow.on_shell_event(ShellEvent::CommandDone),
-            FollowOutput::default()
-        );
-        assert_eq!(
-            follow.on_shell_event(ShellEvent::Cwd("/start".into())),
-            FollowOutput::default()
-        );
+        assert_eq!(follow.on_shell_event(ShellEvent::CommandDone), FollowOutput::default());
+        assert_eq!(follow.on_shell_event(ShellEvent::Cwd("/start".into())), FollowOutput::default());
         let out = follow.on_shell_event(ShellEvent::PromptStart);
         assert_eq!(out.write, Some(b"cd -- $'/two'\r".to_vec()));
         assert_eq!(follow.queued(), None);
@@ -270,16 +238,9 @@ mod tests {
         assert_eq!(follow.browser_moved("/x".into()), None);
         assert_eq!(follow.queued(), Some(Path::new("/x")));
         follow.on_user_input(b"\x7f");
-        assert_eq!(
-            follow.request_cd("/y".into()),
-            None,
-            "backspace may leave text; stay careful"
-        );
+        assert_eq!(follow.request_cd("/y".into()), None, "backspace may leave text; stay careful");
         follow.on_user_input(b"\x03");
-        assert_eq!(
-            follow.on_shell_event(ShellEvent::PromptStart).write,
-            Some(b"cd -- $'/y'\r".to_vec())
-        );
+        assert_eq!(follow.on_shell_event(ShellEvent::PromptStart).write, Some(b"cd -- $'/y'\r".to_vec()));
     }
 
     #[test]
@@ -311,12 +272,7 @@ mod tests {
         assert!(follow.browser_moved("/target".into()).is_some());
         follow.on_shell_event(ShellEvent::CommandStart);
         follow.on_shell_event(ShellEvent::CommandDone);
-        assert_eq!(
-            follow
-                .on_shell_event(ShellEvent::Cwd("/target".into()))
-                .user_cwd,
-            None
-        );
+        assert_eq!(follow.on_shell_event(ShellEvent::Cwd("/target".into())).user_cwd, None);
         follow.on_shell_event(ShellEvent::PromptStart);
         // Browser echoes the shell's own cwd back: nothing is typed.
         assert_eq!(follow.browser_moved("/target".into()), None);
@@ -331,19 +287,10 @@ mod tests {
     #[test]
     fn follow_mode_reports_no_user_cd_and_independent_ignores_browser() {
         let mut follow = idle_zsh(FollowMode::FollowBrowser);
-        assert_eq!(
-            follow
-                .on_shell_event(ShellEvent::Cwd("/other".into()))
-                .user_cwd,
-            None
-        );
+        assert_eq!(follow.on_shell_event(ShellEvent::Cwd("/other".into())).user_cwd, None);
         let mut independent = idle_zsh(FollowMode::Independent);
         assert_eq!(independent.browser_moved("/x".into()), None);
-        assert_eq!(
-            independent.request_cd("/x".into()),
-            Some(b"cd -- $'/x'\r".to_vec()),
-            "sync now"
-        );
+        assert_eq!(independent.request_cd("/x".into()), Some(b"cd -- $'/x'\r".to_vec()), "sync now");
     }
 
     #[test]
@@ -393,21 +340,9 @@ mod tests {
         assert_eq!(flushed.write, Some(b"cd -- $'/one'\r".to_vec()));
         assert_eq!(follow.on_shell_event(ShellEvent::InputStart).write, None);
         assert_eq!(follow.prompt_state(), PromptState::Unknown);
-        assert_eq!(
-            follow.browser_moved("/two".into()),
-            None,
-            "cd still pending"
-        );
-        assert_eq!(
-            follow
-                .on_shell_event(ShellEvent::Cwd("/one".into()))
-                .user_cwd,
-            None
-        );
-        assert_eq!(
-            follow.on_shell_event(ShellEvent::PromptStart).write,
-            Some(b"cd -- $'/two'\r".to_vec())
-        );
+        assert_eq!(follow.browser_moved("/two".into()), None, "cd still pending");
+        assert_eq!(follow.on_shell_event(ShellEvent::Cwd("/one".into())).user_cwd, None);
+        assert_eq!(follow.on_shell_event(ShellEvent::PromptStart).write, Some(b"cd -- $'/two'\r".to_vec()));
     }
 
     #[test]
@@ -420,10 +355,7 @@ mod tests {
         assert_eq!(follow.on_shell_event(ShellEvent::InputStart).write, None);
         assert_eq!(follow.prompt_state(), PromptState::Busy);
         follow.on_shell_event(ShellEvent::CommandDone);
-        assert_eq!(
-            follow.on_shell_event(ShellEvent::PromptStart).write,
-            Some(b"cd -- $'/x'\r".to_vec())
-        );
+        assert_eq!(follow.on_shell_event(ShellEvent::PromptStart).write, Some(b"cd -- $'/x'\r".to_vec()));
     }
 
     #[test]
@@ -435,9 +367,6 @@ mod tests {
         assert!(!same_dir(Path::new("/private/Users"), Path::new("/Users")));
         assert!(!same_dir(Path::new("/privatetmp"), Path::new("/tmp")));
         // Nothing on disk: a missing path is compared, never resolved.
-        assert!(same_dir(
-            Path::new("/Volumes/stalled/a/./b"),
-            Path::new("/Volumes/stalled/a/b")
-        ));
+        assert!(same_dir(Path::new("/Volumes/stalled/a/./b"), Path::new("/Volumes/stalled/a/b")));
     }
 }

@@ -9,10 +9,10 @@ use crate::ui::workspace::{CancelGuard, Workspace};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputContentType, InputState};
 use gpui_kit::component::progress::Progress;
-use gpui_kit::component::{h_flex, v_flex, WindowExt as _};
-use gpui_kit::*;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
+use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use wayfold_core::archive::{self, ArchiveEntry, ArchiveError, ArchiveEvent, ArchiveFormat, ArchiveJob, EntryKind, Limits, Listing};
@@ -23,13 +23,13 @@ const PREVIEW_BYTES: usize = 16 << 10;
 const ROW_H: f32 = 26.;
 
 /// A running job as seen by its dialog.
-struct JobState {
+pub(crate) struct JobState {
     cancel: CancelToken,
     progress: archive::Progress,
 }
 
 /// Dialogs that run an archive job.
-trait JobView: 'static + Sized {
+pub(crate) trait JobView: 'static + Sized {
     fn job_mut(&mut self) -> &mut Option<JobState>;
     /// Handle the result while the dialog is still open; return true if it was shown here.
     fn finished(&mut self, result: &Result<PathBuf, ArchiveError>, window: &mut Window, cx: &mut Context<Self>) -> bool;
@@ -37,7 +37,15 @@ trait JobView: 'static + Sized {
 
 /// Follow `job` until done. Progress goes to the dialog if it is still open; the result is
 /// always reported on the workspace, so closing the dialog lets the job finish in the background.
-fn watch_job<V: JobView>(view: &mut V, job: ArchiveJob, label: &'static str, refresh: PathBuf, workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<V>) {
+fn watch_job<V: JobView>(
+    view: &mut V,
+    job: ArchiveJob,
+    label: &'static str,
+    refresh: PathBuf,
+    workspace: WeakEntity<Workspace>,
+    window: &mut Window,
+    cx: &mut Context<V>,
+) {
     let events = job.events.clone();
     *view.job_mut() = Some(JobState { cancel: job.cancel, progress: Default::default() });
     cx.notify();
@@ -88,10 +96,44 @@ fn job_progress(job: &JobState, total: Option<u64>) -> impl IntoElement {
         Some(t) => bar.value((job.progress.bytes as f32 / t as f32 * 100.).min(100.)),
         None => bar.loading(true),
     };
-    v_flex()
-        .gap_1()
-        .child(bar)
-        .child(div().text_xs().truncate().child(format!("{} · {} item(s) · {}", format_size(job.progress.bytes), job.progress.entries, job.progress.current)))
+    v_flex().gap_1().child(bar).child(div().text_xs().truncate().child(format!(
+        "{} · {} item(s) · {}",
+        format_size(job.progress.bytes),
+        job.progress.entries,
+        job.progress.current
+    )))
+}
+
+/// The dialog's own focus handle, taken right after `open_dialog` (which focuses the new dialog).
+/// `close_dialog` closes the newest dialog, which may be one opened on top of this one (a paste
+/// conflict), so this dialog closes only while focus is inside it, i.e. while it is the topmost one.
+/// A close skipped that way is kept pending and done once the dialog is topmost again.
+#[derive(Default)]
+pub(crate) struct OwnDialog {
+    pub(crate) handle: Option<FocusHandle>,
+    close_pending: bool,
+}
+
+impl OwnDialog {
+    fn is_topmost(&self, window: &Window, cx: &App) -> bool {
+        self.handle.as_ref().is_some_and(|f| f.contains_focused(window, cx))
+    }
+
+    fn close(&mut self, window: &mut Window, cx: &mut App) {
+        if self.is_topmost(window, cx) {
+            window.close_dialog(cx);
+        } else {
+            self.close_pending = true;
+        }
+    }
+
+    /// Called from render: the dialog finished under another one, which is gone now.
+    fn close_if_pending(&mut self, window: &mut Window, cx: &mut App) {
+        if self.close_pending && self.is_topmost(window, cx) {
+            self.close_pending = false;
+            window.defer(cx, |window, cx| window.close_dialog(cx));
+        }
+    }
 }
 
 fn name_of(p: &Path) -> String {
@@ -107,17 +149,24 @@ pub struct CreateArchiveView {
     name: Entity<InputState>,
     format: ArchiveFormat,
     job: Option<JobState>,
+    pub(crate) own_dialog: OwnDialog,
     error: Option<String>,
 }
 
 impl CreateArchiveView {
-    pub fn new(sources: Vec<PathBuf>, dest_dir: PathBuf, workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        sources: Vec<PathBuf>,
+        dest_dir: PathBuf,
+        workspace: WeakEntity<Workspace>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let default = match sources.as_slice() {
             [one] => name_of(one),
             _ => "Archive".to_string(),
         };
         let name = cx.new(|cx| InputState::new(window, cx).default_value(default));
-        Self { sources, dest_dir, workspace, name, format: ArchiveFormat::Zip, job: None, error: None }
+        Self { sources, dest_dir, workspace, name, format: ArchiveFormat::Zip, job: None, own_dialog: OwnDialog::default(), error: None }
     }
 
     fn file_name(&self, cx: &App) -> OsString {
@@ -134,7 +183,11 @@ impl CreateArchiveView {
             return;
         }
         self.error = None;
-        let job = archive::start_create(archive::CreateRequest { sources: self.sources.clone(), dest: self.dest_dir.join(name), format: self.format });
+        let job = archive::start_create(archive::CreateRequest {
+            sources: self.sources.clone(),
+            dest: self.dest_dir.join(name),
+            format: self.format,
+        });
         let (dir, ws) = (self.dest_dir.clone(), self.workspace.clone());
         watch_job(self, job, "Archive created", dir, ws, window, cx);
     }
@@ -148,7 +201,7 @@ impl JobView for CreateArchiveView {
     fn finished(&mut self, result: &Result<PathBuf, ArchiveError>, window: &mut Window, cx: &mut Context<Self>) -> bool {
         match result {
             Ok(_) => {
-                window.close_dialog(cx);
+                self.own_dialog.close(window, cx);
                 false
             }
             Err(e) => {
@@ -160,7 +213,8 @@ impl JobView for CreateArchiveView {
 }
 
 impl Render for CreateArchiveView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.own_dialog.close_if_pending(window, cx);
         let p = palette(cx);
         let running = self.job.is_some();
         let current = self.format;
@@ -169,15 +223,19 @@ impl Render for CreateArchiveView {
         v_flex()
             .gap_2()
             .child(field("Archive name", Input::new(&self.name).disabled(running)))
-            .child(
-                h_flex().gap_2().children(ArchiveFormat::CREATE.into_iter().map(|f| {
-                    Button::new(f.label()).small().label(f.label()).selected(current == f).disabled(running).on_click(cx.listener(move |v, _, _, cx| {
+            .child(h_flex().gap_2().children(ArchiveFormat::CREATE.into_iter().map(|f| {
+                Button::new(f.label()).small().label(f.label()).selected(current == f).disabled(running).on_click(cx.listener(
+                    move |v, _, _, cx| {
                         v.format = f;
                         cx.notify();
-                    }))
-                })),
-            )
-            .child(div().text_sm().text_color(p.muted).child(format!("Will be saved as {} in {}", self.file_name(cx).to_string_lossy(), self.dest_dir.display())))
+                    },
+                ))
+            })))
+            .child(div().text_sm().text_color(p.muted).child(format!(
+                "Will be saved as {} in {}",
+                self.file_name(cx).to_string_lossy(),
+                self.dest_dir.display()
+            )))
             .child(
                 v_flex()
                     .p_2()
@@ -195,17 +253,22 @@ impl Render for CreateArchiveView {
             .child(
                 footer(cx)
                     .when(running, |f| {
-                        f.child(Button::new("arc-bg").label("Run in background").on_click(|_, window, cx| window.close_dialog(cx)))
-                            .child(Button::new("arc-stop").label("Stop").on_click(cx.listener(|v, _, _, cx| {
+                        f.child(Button::new("arc-bg").label("Run in background").on_click(|_, window, cx| window.close_dialog(cx))).child(
+                            Button::new("arc-stop").label("Stop").on_click(cx.listener(|v, _, _, cx| {
                                 if let Some(j) = &v.job {
                                     j.cancel.cancel();
                                 }
                                 cx.notify();
-                            })))
+                            })),
+                        )
                     })
                     .when(!running, |f| {
-                        f.child(Button::new("arc-cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
-                            .child(Button::new("arc-create").primary().label("Create").on_click(cx.listener(|v, _, window, cx| v.create(window, cx))))
+                        f.child(Button::new("arc-cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx))).child(
+                            Button::new("arc-create")
+                                .primary()
+                                .label("Create")
+                                .on_click(cx.listener(|v, _, window, cx| v.create(window, cx))),
+                        )
                     }),
             )
     }
@@ -231,6 +294,7 @@ pub struct ExtractArchiveView {
     selected: Option<usize>,
     preview: Option<String>,
     job: Option<JobState>,
+    pub(crate) own_dialog: OwnDialog,
     error: Option<String>,
     /// Dropping the dialog (or relisting) stops a running listing.
     list_cancel: Option<CancelGuard>,
@@ -254,6 +318,7 @@ impl ExtractArchiveView {
             selected: None,
             preview: None,
             job: None,
+            own_dialog: OwnDialog::default(),
             error: None,
             list_cancel: None,
             _tasks: Vec::new(),
@@ -349,11 +414,7 @@ impl ExtractArchiveView {
 fn preview_text(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let suspicious = text.chars().filter(|c| *c == '\u{FFFD}' || (c.is_control() && !c.is_whitespace())).count();
-    if suspicious * 20 > text.chars().count().max(1) {
-        format!("Binary data ({} bytes previewed)", bytes.len())
-    } else {
-        text.into_owned()
-    }
+    if suspicious * 20 > text.chars().count().max(1) { format!("Binary data ({} bytes previewed)", bytes.len()) } else { text.into_owned() }
 }
 
 impl JobView for ExtractArchiveView {
@@ -364,7 +425,7 @@ impl JobView for ExtractArchiveView {
     fn finished(&mut self, result: &Result<PathBuf, ArchiveError>, window: &mut Window, cx: &mut Context<Self>) -> bool {
         match result {
             Ok(_) => {
-                window.close_dialog(cx);
+                self.own_dialog.close(window, cx);
                 false
             }
             Err(e) => {
@@ -377,7 +438,8 @@ impl JobView for ExtractArchiveView {
 }
 
 impl Render for ExtractArchiveView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.own_dialog.close_if_pending(window, cx);
         let p = palette(cx);
         let running = self.job.is_some();
         let count = self.entries().len();
@@ -426,33 +488,44 @@ impl Render for ExtractArchiveView {
         let listing_failed = matches!(self.listing, ListState::Failed(_));
         v_flex()
             .gap_2()
-            .child(div().text_sm().text_color(p.muted).child(format!("{} · {}", name_of(&self.archive), self.format.map_or("Unknown", |f| f.label()))))
+            .child(div().text_sm().text_color(p.muted).child(format!(
+                "{} · {}",
+                name_of(&self.archive),
+                self.format.map_or("Unknown", |f| f.label())
+            )))
             .child(
-                h_flex()
-                    .gap_2()
-                    .h(px(240.))
-                    .child(div().flex_1().h_full().border_1().border_color(p.line).rounded_md().child(list))
-                    .child(
-                        div()
-                            .id("arc-preview")
-                            .w(px(300.))
-                            .h_full()
-                            .p_2()
-                            .border_1()
-                            .border_color(p.line)
-                            .rounded_md()
-                            .overflow_y_scroll()
-                            .text_xs()
-                            .font_family("monospace")
-                            .child(self.preview.clone().unwrap_or_else(|| "Select a file to preview its beginning.".into())),
-                    ),
+                h_flex().gap_2().h(px(240.)).child(div().flex_1().h_full().border_1().border_color(p.line).rounded_md().child(list)).child(
+                    div()
+                        .id("arc-preview")
+                        .w(px(300.))
+                        .h_full()
+                        .p_2()
+                        .border_1()
+                        .border_color(p.line)
+                        .rounded_md()
+                        .overflow_y_scroll()
+                        .text_xs()
+                        .font_family("monospace")
+                        .child(self.preview.clone().unwrap_or_else(|| "Select a file to preview its beginning.".into())),
+                ),
             )
             .child(div().text_xs().text_color(if listing_failed { p.danger } else { p.muted }).child(status))
             .child(field("Extract into a new folder named", Input::new(&self.name).disabled(running)))
-            .child(div().text_xs().text_color(p.muted).child(format!("in {} (a free name is chosen if it exists)", self.dest_dir.display())))
+            .child(
+                div().text_xs().text_color(p.muted).child(format!("in {} (a free name is chosen if it exists)", self.dest_dir.display())),
+            )
             .when(self.needs_password, |d| {
-                d.child(field("Password", Input::new(&self.password).content_type(InputContentType::Password).mask_toggle().disabled(running))).when(listing_failed, |d| {
-                    d.child(Button::new("arc-unlock").small().label("Read with password").on_click(cx.listener(|v, _, _, cx| v.load_listing(cx))))
+                d.child(field(
+                    "Password",
+                    Input::new(&self.password).content_type(InputContentType::Password).mask_toggle().disabled(running),
+                ))
+                .when(listing_failed, |d| {
+                    d.child(
+                        Button::new("arc-unlock")
+                            .small()
+                            .label("Read with password")
+                            .on_click(cx.listener(|v, _, _, cx| v.load_listing(cx))),
+                    )
                 })
             })
             .when_some(self.job.as_ref(), |d, j| d.child(job_progress(j, Some(total))))
@@ -460,17 +533,23 @@ impl Render for ExtractArchiveView {
             .child(
                 footer(cx)
                     .when(running, |f| {
-                        f.child(Button::new("arc-bg").label("Run in background").on_click(|_, window, cx| window.close_dialog(cx)))
-                            .child(Button::new("arc-stop").label("Stop").on_click(cx.listener(|v, _, _, cx| {
+                        f.child(Button::new("arc-bg").label("Run in background").on_click(|_, window, cx| window.close_dialog(cx))).child(
+                            Button::new("arc-stop").label("Stop").on_click(cx.listener(|v, _, _, cx| {
                                 if let Some(j) = &v.job {
                                     j.cancel.cancel();
                                 }
                                 cx.notify();
-                            })))
+                            })),
+                        )
                     })
                     .when(!running, |f| {
-                        f.child(Button::new("arc-cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx)))
-                            .child(Button::new("arc-extract").primary().label("Extract").disabled(self.format.is_none()).on_click(cx.listener(|v, _, window, cx| v.extract(window, cx))))
+                        f.child(Button::new("arc-cancel").label("Cancel").on_click(|_, window, cx| window.close_dialog(cx))).child(
+                            Button::new("arc-extract")
+                                .primary()
+                                .label("Extract")
+                                .disabled(self.format.is_none())
+                                .on_click(cx.listener(|v, _, window, cx| v.extract(window, cx))),
+                        )
                     }),
             )
     }

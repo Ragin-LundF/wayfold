@@ -1,13 +1,13 @@
 //! Safe, staged, all-or-nothing extraction.
 
-use super::read::{self, rar_err, rar_item, rar_open, Item};
-use super::{publish, temp_path, ArchiveError, ArchiveFormat, EntryKind, Limits, Progress, ProgressFn, RATIO_FLOOR};
+use super::read::{self, Item, rar_err, rar_item, rar_open};
+use super::{ArchiveError, ArchiveFormat, EntryKind, Limits, Progress, ProgressFn, RATIO_FLOOR, publish, temp_path};
 use crate::pool::CancelToken;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::{symlink, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt, symlink};
 use std::path::{Component, Path, PathBuf};
 
 const CHUNK: usize = 64 << 10;

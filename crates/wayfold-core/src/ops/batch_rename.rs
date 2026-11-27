@@ -3,7 +3,7 @@
 //! replace, case, prefix + suffix, sequence number appended after the suffix.
 
 use super::fileops::rename_set;
-use super::{identity, is_case_sensitive, validate_name, FileIdentity, ItemResult, NameProblem, RenamedItem, UndoAction};
+use super::{FileIdentity, ItemResult, NameProblem, RenamedItem, UndoAction, identity, is_case_sensitive, validate_name};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -68,11 +68,7 @@ impl RenameRow {
 /// Preview a batch. Errors only for an invalid regex. Blocks on stat calls.
 pub fn plan_batch_rename(paths: &[PathBuf], rules: &RenameRules) -> Result<Vec<RenameRow>, regex::Error> {
     let re = if rules.regex && !rules.find.is_empty() { Some(Regex::new(&rules.find)?) } else { None };
-    let mut rows: Vec<RenameRow> = paths
-        .iter()
-        .enumerate()
-        .map(|(i, p)| plan_row(p, rules, re.as_ref(), i as u64))
-        .collect();
+    let mut rows: Vec<RenameRow> = paths.iter().enumerate().map(|(i, p)| plan_row(p, rules, re.as_ref(), i as u64)).collect();
     mark_collisions(&mut rows);
     Ok(rows)
 }
@@ -164,7 +160,7 @@ fn mark_collisions(rows: &mut [RenameRow]) {
 
 /// Apply a planned batch. Refused (`Err`) while any row has a problem. Rows that changed on
 /// disk since planning fail individually; the rest still apply.
-pub fn apply_batch_rename(rows: &[RenameRow]) -> Result<(Vec<ItemResult>, UndoAction), RenameProblem> {
+pub fn apply_batch_rename(rows: &[RenameRow]) -> Result<(Vec<ItemResult>, Option<UndoAction>), RenameProblem> {
     if let Some(p) = rows.iter().find_map(|r| r.problem) {
         return Err(p);
     }
@@ -174,13 +170,14 @@ pub fn apply_batch_rename(rows: &[RenameRow]) -> Result<(Vec<ItemResult>, UndoAc
         .filter_map(|r| Some(RenamedItem { from: r.before.clone(), to: r.after.clone(), identity: r.identity? }))
         .collect();
     let (results, renamed) = rename_set(&items);
-    Ok((results, UndoAction::Renamed(renamed)))
+    let undo = (!renamed.is_empty()).then_some(UndoAction::Renamed(renamed));
+    Ok((results, undo))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ops::{test_env, undo, ItemOutcome};
+    use crate::ops::{ItemOutcome, test_env, undo};
 
     fn files(dir: &Path, names: &[&str]) -> Vec<PathBuf> {
         names
@@ -263,7 +260,7 @@ mod tests {
         assert_eq!(fs::read(&p[1]).unwrap(), b"a");
         assert_eq!(fs::read_dir(t.path()).unwrap().count(), 2, "no hop files left");
 
-        assert!(undo(&u).iter().all(|r| matches!(r.outcome, ItemOutcome::Done(_))));
+        assert!(undo(&u.unwrap()).iter().all(|r| matches!(r.outcome, ItemOutcome::Done(_))));
         assert_eq!(fs::read(&p[0]).unwrap(), b"a");
     }
 
@@ -280,6 +277,20 @@ mod tests {
         assert!(matches!(results[1].outcome, ItemOutcome::Done(_)));
         assert_eq!(fs::read(t.path().join("a-new")).unwrap(), b"intruder");
         assert_eq!(fs::read(&p[0]).unwrap(), b"a");
-        assert!(matches!(u, UndoAction::Renamed(ref v) if v.len() == 1));
+        assert!(matches!(u, Some(UndoAction::Renamed(ref v)) if v.len() == 1));
+    }
+
+    #[test]
+    fn all_rows_failing_records_no_undo() {
+        test_env();
+        let t = tempfile::tempdir().unwrap();
+        let p = files(t.path(), &["a", "b"]);
+        let rules = RenameRules { suffix: "-new".into(), ..Default::default() };
+        let rows = plan_batch_rename(&p, &rules).unwrap();
+        fs::write(t.path().join("a-new"), b"intruder").unwrap();
+        fs::write(t.path().join("b-new"), b"intruder").unwrap();
+        let (results, u) = apply_batch_rename(&rows).unwrap();
+        assert!(results.iter().all(|r| matches!(r.outcome, ItemOutcome::Failed(_))));
+        assert!(u.is_none(), "an empty batch must not record an undo step");
     }
 }

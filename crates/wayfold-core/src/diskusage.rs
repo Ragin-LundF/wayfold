@@ -15,8 +15,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const WORKERS: usize = 4;
 /// Files kept per folder; smaller ones are folded into one summary node to bound memory.
@@ -106,7 +106,12 @@ pub fn scan(root: &Path, cancel: &CancelToken, progress: &(dyn Fn(u64, u64) + Sy
     let md = match fs::symlink_metadata(root) {
         Ok(md) => md,
         Err(e) => {
-            return UsageReport { root: UsageNode { name, ..Default::default() }, error_count: 1, errors: vec![(root.into(), e.to_string())], cancelled: false };
+            return UsageReport {
+                root: UsageNode { name, ..Default::default() },
+                error_count: 1,
+                errors: vec![(root.into(), e.to_string())],
+                cancelled: false,
+            };
         }
     };
     let shared = Shared {
@@ -288,7 +293,7 @@ fn worst(row: &[f64], side: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     fn no_progress() -> impl Fn(u64, u64) + Sync {
         |_, _| {}

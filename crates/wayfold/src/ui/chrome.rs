@@ -3,15 +3,15 @@
 use crate::app::actions::*;
 use crate::app::state::*;
 use crate::ui::browser::{icon, render_pane};
-use crate::ui::theme::{self, palette, Palette, NARROW_W, PREVIEW_W, QUEUE_H, SIDEBAR_W, STATUS_H, TERMINAL_H, TOOLBAR_H};
+use crate::ui::theme::{NARROW_W, PREVIEW_W, Palette, SIDEBAR_W, STATUS_H, TERMINAL_H, TOOLBAR_H, palette};
 use crate::ui::workspace::Workspace;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::DropdownMenu as _;
-use gpui_kit::component::{h_flex, v_flex};
-use gpui_kit::*;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
+use gpui_kit::component::{h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use std::path::PathBuf;
 use wayfold_core::fs::format_size;
 
@@ -21,16 +21,13 @@ pub fn render_workspace(w: &mut Workspace, window: &mut Window, cx: &mut Context
     let p = palette(cx);
     let narrow = window.viewport_size().width.to_f64() as f32 <= NARROW_W;
 
-    let browsers = h_flex()
-        .flex_1()
-        .min_h_0()
-        .children((0..w.panes.len()).map(|ix| render_pane(w, ix, window, cx).into_any_element()));
+    let browsers = h_flex().flex_1().min_h_0().children((0..w.panes.len()).map(|ix| render_pane(w, ix, window, cx).into_any_element()));
 
     let mut main = v_flex().flex_1().min_w_0().h_full().child(browsers);
-    if w.terminal_open {
-        if let Some(term) = &w.terminal {
-            main = main.child(div().h(px(TERMINAL_H)).flex_none().border_t_1().border_color(p.line).child(term.clone()));
-        }
+    if w.terminal_open
+        && let Some(term) = &w.terminal
+    {
+        main = main.child(div().h(px(TERMINAL_H)).flex_none().border_t_1().border_color(p.line).child(term.clone()));
     }
     if w.queue_open {
         main = main.child(crate::ui::transfers::render_queue(w, cx).into_any_element());
@@ -46,22 +43,14 @@ pub fn render_workspace(w: &mut Workspace, window: &mut Window, cx: &mut Context
         .text_size(px(13.))
         .key_context(WORKSPACE)
         .child(render_toolbar(w, cx))
-        .child(
-            h_flex()
-                .flex_1()
-                .min_h_0()
-                .relative()
-                .child(render_sidebar(w, narrow, cx))
-                .child(main)
-                .when_some(preview, |d, pv| {
-                    if narrow {
-                        // Narrow windows overlay the preview instead of squeezing file columns.
-                        d.child(div().absolute().right_0().top_0().bottom_0().w(px(PREVIEW_W)).shadow_lg().child(pv))
-                    } else {
-                        d.child(div().w(px(PREVIEW_W)).flex_none().h_full().child(pv))
-                    }
-                }),
-        )
+        .child(h_flex().flex_1().min_h_0().relative().child(render_sidebar(w, narrow, cx)).child(main).when_some(preview, |d, pv| {
+            if narrow {
+                // Narrow windows overlay the preview instead of squeezing file columns.
+                d.child(div().absolute().right_0().top_0().bottom_0().w(px(PREVIEW_W)).shadow_lg().child(pv))
+            } else {
+                d.child(div().w(px(PREVIEW_W)).flex_none().h_full().child(pv))
+            }
+        }))
         .child(render_status(w, cx));
     let root = w.register_actions(root, cx);
     w.register_file_actions(root, cx)
@@ -112,11 +101,31 @@ fn render_toolbar(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElemen
         .bg(p.panel)
         .border_b_1()
         .border_color(p.line)
-        .child(tool_button("back", "chevron-left", "Back (⌘[)").disabled(!can_back).on_click(|_, w, cx| w.dispatch_action(Box::new(GoBack), cx)))
-        .child(tool_button("fwd", "chevron-right", "Forward (⌘])").disabled(!can_fwd).on_click(|_, w, cx| w.dispatch_action(Box::new(GoForward), cx)))
-        .child(tool_button("up", "arrow-up", "Enclosing folder (⌘↑)").disabled(!can_up).on_click(|_, w, cx| w.dispatch_action(Box::new(GoUp), cx)))
+        .child(
+            tool_button("back", "chevron-left", "Back (⌘[)")
+                .disabled(!can_back)
+                .on_click(|_, w, cx| w.dispatch_action(Box::new(GoBack), cx)),
+        )
+        .child(
+            tool_button("fwd", "chevron-right", "Forward (⌘])")
+                .disabled(!can_fwd)
+                .on_click(|_, w, cx| w.dispatch_action(Box::new(GoForward), cx)),
+        )
+        .child(
+            tool_button("up", "arrow-up", "Enclosing folder (⌘↑)")
+                .disabled(!can_up)
+                .on_click(|_, w, cx| w.dispatch_action(Box::new(GoUp), cx)),
+        )
         .child(div().flex_1().min_w(px(90.)).mx_2().child(path_field))
-        .child(Button::new("search").ghost().small().icon(icon("search")).label("Search").tooltip("Search (⌘F)").on_click(|_, w, cx| w.dispatch_action(Box::new(Search), cx)))
+        .child(
+            Button::new("search")
+                .ghost()
+                .small()
+                .icon(icon("search"))
+                .label("Search")
+                .tooltip("Search (⌘F)")
+                .on_click(|_, w, cx| w.dispatch_action(Box::new(Search), cx)),
+        )
         .child(
             Button::new("view")
                 .ghost()
@@ -131,6 +140,7 @@ fn render_toolbar(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElemen
                 .dropdown_menu({
                     let f = w.filters;
                     let group = tab.sort.group_kind;
+                    let folders_first = w.prefs.folders_first;
                     let ext = w.prefs.show_extensions;
                     let (cs, ck, cm) = (w.column_visible("Size"), w.column_visible("Kind"), w.column_visible("Modified"));
                     move |menu, _, _| {
@@ -143,6 +153,7 @@ fn render_toolbar(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElemen
                             .menu("Sort by Kind", Box::new(SortByKind))
                             .menu("Sort by Date Modified", Box::new(SortByModified))
                             .menu_with_check("Group by kind", group, Box::new(ToggleGroupByKind))
+                            .menu_with_check("Folders first", folders_first, Box::new(ToggleFoldersFirst))
                             .separator()
                             .menu_with_check("Hidden files", f.show_hidden, Box::new(ToggleHidden))
                             .menu_with_check("System files", f.show_system, Box::new(ToggleSystem))
@@ -185,6 +196,11 @@ fn render_toolbar(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElemen
                 .separator()
                 .menu("Connect to Server…", Box::new(ConnectToServer))
         }))
+}
+
+/// Accessible name of a sidebar tag button; `label` is the shown (localized) tag name.
+pub(crate) fn tag_aria_label(label: &str) -> String {
+    format!("Filter by tag {label}")
 }
 
 fn sidebar_heading(p: &Palette, label: &'static str) -> impl IntoElement {
@@ -240,25 +256,34 @@ fn render_sidebar(w: &Workspace, narrow: bool, cx: &mut Context<Workspace>) -> i
             let missing = !f.exists();
             let label: SharedString = if f == w.home { "Home".into() } else { display_name(&f).into() };
             let remove = f.clone();
-            sidebar_item(format!("fav-{}", f.display()).into(), icon(if f == w.home { "house" } else { "folder" }), label.clone(), loc == f, &p)
-                .when(missing, |d| d.opacity(0.5))
-                .on_click(cx.listener(nav(f.clone())))
-                .child(
-                    div()
-                        .id(SharedString::from(format!("fav-rm-{}", remove.display())))
-                        .role(Role::Button)
-                        .aria_label(SharedString::from(format!("Remove {} from Favorites", display_name(&remove))))
-                        .px_1()
-                        .rounded_sm()
-                        .text_color(p.muted)
-                        .hover(|s| s.bg(p.line).text_color(p.text))
-                        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(format!("Remove {label} from Favorites (folder is kept)")).build(window, cx))
-                        .child(icon("x").xsmall())
-                        .on_click(cx.listener(move |w, _, _, cx| {
-                            cx.stop_propagation();
-                            w.remove_favorite(&remove, cx);
-                        })),
-                )
+            sidebar_item(
+                format!("fav-{}", f.display()).into(),
+                icon(if f == w.home { "house" } else { "folder" }),
+                label.clone(),
+                loc == f,
+                &p,
+            )
+            .when(missing, |d| d.opacity(0.5))
+            .on_click(cx.listener(nav(f.clone())))
+            .child(
+                div()
+                    .id(SharedString::from(format!("fav-rm-{}", remove.display())))
+                    .role(Role::Button)
+                    .aria_label(SharedString::from(format!("Remove {} from Favorites", display_name(&remove))))
+                    .px_1()
+                    .rounded_sm()
+                    .text_color(p.muted)
+                    .hover(|s| s.bg(p.line).text_color(p.text))
+                    .tooltip(move |window, cx| {
+                        gpui_kit::component::tooltip::Tooltip::new(format!("Remove {label} from Favorites (folder is kept)"))
+                            .build(window, cx)
+                    })
+                    .child(icon("x").xsmall())
+                    .on_click(cx.listener(move |w, _, _, cx| {
+                        cx.stop_propagation();
+                        w.remove_favorite(&remove, cx);
+                    })),
+            )
         }))
         .child(
             sidebar_item("fav-add".into(), icon("plus"), "Add favorite".into(), false, &p)
@@ -273,13 +298,14 @@ fn render_sidebar(w: &Workspace, narrow: bool, cx: &mut Context<Workspace>) -> i
             }))
         })
         .child(sidebar_heading(&p, "TAGS"))
-        .children(theme::TAGS.iter().map(|(name, color)| {
+        .children(w.standard_tags.iter().map(|(name, color, _)| {
+            // The English name stays the filter key; Finder's localized name is shown (D-3).
             let on = w.tag_filter.as_deref() == Some(*name);
-            let name = *name;
+            let (name, label) = (*name, w.tag_label(name));
             h_flex()
                 .id(SharedString::from(format!("tag-{name}")))
                 .role(Role::Button)
-                .aria_label(SharedString::from(format!("Filter by tag {name}")))
+                .aria_label(SharedString::from(tag_aria_label(&label)))
                 .aria_selected(on)
                 .h(px(28.))
                 .px_2()
@@ -289,7 +315,7 @@ fn render_sidebar(w: &Workspace, narrow: bool, cx: &mut Context<Workspace>) -> i
                 .when(on, |d| d.bg(p.selection))
                 .when(!on, |d| d.hover(|s| s.bg(p.hover)))
                 .child(div().size(px(10.)).rounded_full().bg(rgb(*color)))
-                .child(name)
+                .child(SharedString::from(label))
                 .on_click(cx.listener(move |w, _, _, cx| w.toggle_tag_filter(name, cx)))
         }))
         .child(sidebar_heading(&p, "LOCATIONS"))
@@ -322,7 +348,10 @@ fn render_status(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement
         }
     }
     let clip: SharedString = match &w.clipboard {
-        Some(c) => format!("{} {} · clear", if c.mode == crate::ui::clipboard::ClipMode::Cut { "✂ Cut" } else { "⧉ Copied" }, c.sources.len()).into(),
+        Some(c) => {
+            format!("{} {} · clear", if c.mode == crate::ui::clipboard::ClipMode::Cut { "✂ Cut" } else { "⧉ Copied" }, c.sources.len())
+                .into()
+        }
         None => "Clipboard empty".into(),
     };
     let active = w.active_transfer_count();
@@ -366,5 +395,3 @@ fn render_status(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement
                 .on_click(|_, win, cx| win.dispatch_action(Box::new(ToggleTerminal), cx)),
         )
 }
-
-pub const QUEUE_HEIGHT: f32 = QUEUE_H;

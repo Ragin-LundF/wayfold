@@ -62,11 +62,7 @@ pub fn stat_entry(path: &Path) -> Entry {
 
 /// List `dir` progressively. `on_batch` receives up to `BATCH` entries at a time; it returns
 /// `false` to stop early. Cancellation is checked between batches.
-pub fn list_dir(
-    dir: &Path,
-    cancel: &CancelToken,
-    mut on_batch: impl FnMut(Vec<Entry>) -> bool,
-) -> io::Result<()> {
+pub fn list_dir(dir: &Path, cancel: &CancelToken, mut on_batch: impl FnMut(Vec<Entry>) -> bool) -> io::Result<()> {
     let mut batch = Vec::with_capacity(BATCH);
     for item in fs::read_dir(dir)? {
         if cancel.is_cancelled() {

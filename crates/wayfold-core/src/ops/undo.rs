@@ -3,9 +3,9 @@
 //! and reports a conflict instead of overwriting anything.
 
 use super::fileops::{rename_set, restore};
-use super::journal::{journaled, JournalOp};
+use super::journal::{JournalOp, journaled};
 use super::trash::move_to_trash;
-use super::{identity, FileIdentity, ItemOutcome, ItemResult};
+use super::{FileIdentity, ItemOutcome, ItemResult, identity};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -29,17 +29,17 @@ pub struct TrashedItem {
 pub enum UndoAction {
     /// Rename, batch rename or same-volume move.
     Renamed(Vec<RenamedItem>),
-    Created { path: PathBuf, identity: FileIdentity },
+    Created {
+        path: PathBuf,
+        identity: FileIdentity,
+    },
     Trashed(Vec<TrashedItem>),
 }
 
 pub fn undo(action: &UndoAction) -> Vec<ItemResult> {
     match action {
         UndoAction::Renamed(items) => {
-            let back: Vec<_> = items
-                .iter()
-                .map(|i| RenamedItem { from: i.to.clone(), to: i.from.clone(), identity: i.identity })
-                .collect();
+            let back: Vec<_> = items.iter().map(|i| RenamedItem { from: i.to.clone(), to: i.from.clone(), identity: i.identity }).collect();
             rename_set(&back).0
         }
         UndoAction::Trashed(items) => items.iter().map(restore).collect(),
@@ -89,8 +89,12 @@ mod tests {
 
         let (r, u) = trash(std::slice::from_ref(&a));
         assert!(matches!(r[0].outcome, ItemOutcome::Done(_)) && !a.exists());
-        assert!(matches!(undo(&u)[0].outcome, ItemOutcome::Done(_)));
+        assert!(matches!(undo(&u.expect("trash undo"))[0].outcome, ItemOutcome::Done(_)));
         assert_eq!(fs::read(&a).unwrap(), b"a");
+
+        let (r, u) = trash(&[t.path().join("missing")]);
+        assert!(matches!(r[0].outcome, ItemOutcome::Failed(_)));
+        assert!(u.is_none(), "a trash where nothing reached the Trash must not leave an undo entry");
     }
 
     #[test]

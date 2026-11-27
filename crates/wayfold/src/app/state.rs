@@ -15,8 +15,6 @@ fn next_id() -> u64 {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct TabId(pub u64);
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PaneId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ViewMode {
@@ -39,6 +37,7 @@ pub enum SortKey {
 pub struct Sort {
     pub key: SortKey,
     pub ascending: bool,
+    /// Still saved per tab/folder, but the global `Prefs.folders_first` overrides it when sorting.
     pub folders_first: bool,
     /// Group rows by kind with section headers (N02).
     #[serde(default)]
@@ -193,7 +192,25 @@ impl Tab {
             None => rows.len() - 1,
             Some(i) => (i as isize + delta).clamp(0, rows.len() as isize - 1) as usize,
         };
-        let path = rows[next].path.clone();
+        self.move_to(rows, next, extend);
+    }
+
+    /// Home/End: first or last row; `extend` keeps the anchor (shift).
+    pub fn move_to_edge(&mut self, rows: &[&Entry], last: bool, extend: bool) {
+        if rows.is_empty() {
+            return;
+        }
+        self.move_to(rows, if last { rows.len() - 1 } else { 0 }, extend);
+    }
+
+    /// PageDown/PageUp: `page` rows (at least one) down or up, clamped at the ends.
+    pub fn move_page(&mut self, rows: &[&Entry], page: usize, down: bool, extend: bool) {
+        let step = page.max(1) as isize;
+        self.move_cursor(rows, if down { step } else { -step }, extend);
+    }
+
+    fn move_to(&mut self, rows: &[&Entry], ix: usize, extend: bool) {
+        let path = rows[ix].path.clone();
         if extend {
             self.select_range(rows, &path);
         } else {
@@ -306,14 +323,13 @@ fn trim_zeros(d: &[u8]) -> &[u8] {
 
 #[derive(Clone, Debug)]
 pub struct Pane {
-    pub id: PaneId,
     pub tabs: Vec<Tab>,
     pub active: usize,
 }
 
 impl Pane {
     pub fn new(location: PathBuf) -> Self {
-        Self { id: PaneId(next_id()), tabs: vec![Tab::new(location)], active: 0 }
+        Self { tabs: vec![Tab::new(location)], active: 0 }
     }
 
     pub fn tab(&self) -> &Tab {
@@ -341,11 +357,7 @@ impl Pane {
         let Some(ix) = self.tabs.iter().position(|t| t.id == id) else { return false };
         let active_id = self.tab().id;
         self.tabs.remove(ix);
-        self.active = self
-            .tabs
-            .iter()
-            .position(|t| t.id == active_id)
-            .unwrap_or(ix.min(self.tabs.len() - 1));
+        self.active = self.tabs.iter().position(|t| t.id == active_id).unwrap_or(ix.min(self.tabs.len() - 1));
         true
     }
 }
@@ -440,6 +452,30 @@ mod tests {
     }
 
     #[test]
+    fn page_move_clamps_at_the_ends_and_extends_from_the_anchor() {
+        let es: Vec<Entry> = (0..25).map(|i| e(&format!("f{i:02}"), false, 0)).collect();
+        let mut t = Tab::new("/t".into());
+        let rows = visible_rows(&es, Filters::default(), "", t.sort);
+        let at = |t: &Tab| rows.iter().position(|e| Some(&e.path) == t.cursor.as_ref());
+
+        t.select_only(&rows[0].path);
+        t.move_page(&rows, 10, true, false);
+        assert_eq!(at(&t), Some(10));
+        t.move_page(&rows, 10, true, false);
+        t.move_page(&rows, 10, true, false);
+        assert_eq!(at(&t), Some(24), "clamped at the last row");
+        t.move_page(&rows, 10, false, true);
+        assert_eq!(at(&t), Some(14));
+        assert_eq!(t.selection.len(), 11, "rows 14..=24 from the anchor");
+        t.move_page(&rows, 10, false, false);
+        t.move_page(&rows, 10, false, false);
+        assert_eq!(at(&t), Some(0), "clamped at the first row");
+        assert_eq!(t.selection.len(), 1);
+        t.move_page(&rows, 0, true, false);
+        assert_eq!(at(&t), Some(1), "an empty viewport still moves one row");
+    }
+
+    #[test]
     fn n05_selection_survives_sorting_and_range() {
         let es = vec![e("b", false, 3), e("a", false, 1), e("c", false, 2), e(".h", false, 0)];
         let mut t = Tab::new("/t".into());
@@ -470,10 +506,7 @@ mod tests {
     #[test]
     fn folders_first_and_natural_names() {
         let es = vec![e("file10", false, 0), e("file2", false, 0), e("zdir", true, 0)];
-        let names: Vec<_> = visible_rows(&es, Filters::default(), "", Sort::default())
-            .iter()
-            .map(|e| e.display_name())
-            .collect();
+        let names: Vec<_> = visible_rows(&es, Filters::default(), "", Sort::default()).iter().map(|e| e.display_name()).collect();
         assert_eq!(names, ["zdir", "file2", "file10"]);
         assert_eq!(natural_cmp("a007", "a7"), std::cmp::Ordering::Equal);
         assert_eq!(natural_cmp("B", "a"), std::cmp::Ordering::Greater);

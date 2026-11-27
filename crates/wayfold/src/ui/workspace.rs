@@ -4,10 +4,10 @@ use crate::app::actions::*;
 use crate::app::listing::ListingCache;
 use crate::app::state::*;
 use crate::terminal_view::{TerminalPanel, TerminalPanelEvent};
-use crate::ui::theme::{self, palette};
-use gpui_kit::component::input::{InputEvent, InputState};
-use gpui_kit::component::WindowExt as _;
+use crate::ui::theme;
 use gpui_kit::Focusable as _;
+use gpui_kit::component::WindowExt as _;
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -43,6 +43,9 @@ pub struct Prefs {
     pub show_extensions: bool,
     #[serde(default)]
     pub hidden_columns: Vec<String>,
+    /// Global: folders sort before files in every folder; overrides `Sort::folders_first` of tabs and folder prefs.
+    #[serde(default = "yes")]
+    pub folders_first: bool,
 }
 
 fn yes() -> bool {
@@ -59,6 +62,7 @@ impl Default for Prefs {
             folder_views: vec![],
             show_extensions: true,
             hidden_columns: vec![],
+            folders_first: true,
         }
     }
 }
@@ -72,7 +76,10 @@ pub struct FolderPref {
     pub sort: Sort,
 }
 
+// Listing versions come from the `ListingCache` clock, so they are unique across folders.
 type RowKey = (u64, u64, String, Sort, Filters);
+/// Per-tab sorted/filtered row order, tagged with the key it was computed for.
+type RowCache = HashMap<TabId, (RowKey, std::rc::Rc<Vec<usize>>)>;
 
 const MAX_RECENTS: usize = 12;
 const MAX_FOLDER_PREFS: usize = 500;
@@ -93,6 +100,8 @@ pub struct Workspace {
     pub prefs: Prefs,
     pub volumes: Vec<Mount>,
     pub tag_filter: Option<String>,
+    /// Standard tags as (English key, dot color, Finder's localized tag), resolved once at start (D-3).
+    pub standard_tags: Vec<(&'static str, u32, wfs::tags::Tag)>,
     pub preview_open: bool,
     pub terminal_open: bool,
     pub queue_open: bool,
@@ -113,7 +122,9 @@ pub struct Workspace {
     pub preview: crate::ui::preview::PreviewState,
     pub search: crate::ui::search::SearchState,
     /// Sorted/filtered row order per tab; recomputed only when its key changes (100k rows).
-    row_cache: std::cell::RefCell<HashMap<TabId, (RowKey, std::rc::Rc<Vec<usize>>)>>,
+    row_cache: std::cell::RefCell<RowCache>,
+    /// Tiles per row from the last icons layout; all panes share one width.
+    pub(crate) icons_per_row: std::cell::Cell<usize>,
     _tasks: Vec<Task<()>>,
     pub(crate) _subscriptions: Vec<Subscription>,
 }
@@ -179,6 +190,7 @@ impl Workspace {
             prefs: Prefs { favorites, ..prefs },
             volumes: wfs::mounts(),
             tag_filter: None,
+            standard_tags: theme::TAGS.iter().filter_map(|&(name, rgb)| Some((name, rgb, wfs::tags::standard(name)?))).collect(),
             preview_open: false,
             terminal_open: false,
             queue_open: false,
@@ -198,6 +210,7 @@ impl Workspace {
             preview: Default::default(),
             search: Default::default(),
             row_cache: Default::default(),
+            icons_per_row: std::cell::Cell::new(1),
             _tasks: vec![],
             _subscriptions: vec![],
         };
@@ -239,15 +252,22 @@ impl Workspace {
             return self.search.results.iter().collect();
         }
         let Some(l) = self.cache.get(&tab.location) else { return vec![] };
-        let key = (l.version, l.generation, tab.filter.clone(), tab.sort, self.filters);
+        // The effective sort is part of the key, so toggling the global pref invalidates cached rows.
+        let sort = self.effective_sort(tab.sort);
+        let key = (l.version, l.generation, tab.filter.clone(), sort, self.filters);
         let mut cache = self.row_cache.borrow_mut();
         let hit = cache.get(&tab.id).filter(|(k, _)| *k == key).map(|(_, v)| v.clone());
         let ix = hit.unwrap_or_else(|| {
-            let v = std::rc::Rc::new(visible_indices(&l.entries, self.filters, &tab.filter, tab.sort));
+            let v = std::rc::Rc::new(visible_indices(&l.entries, self.filters, &tab.filter, sort));
             cache.insert(tab.id, (key, v.clone()));
             v
         });
         ix.iter().filter_map(|&i| l.entries.get(i)).collect()
+    }
+
+    /// A tab's sort with the global "Folders First" pref applied.
+    pub fn effective_sort(&self, sort: Sort) -> Sort {
+        Sort { folders_first: self.prefs.folders_first, ..sort }
     }
 
     pub fn rows(&self) -> Vec<&Entry> {
@@ -279,7 +299,7 @@ impl Workspace {
             let t = p.tab();
             s.insert(t.location.clone());
             if t.view == ViewMode::Columns {
-                s.extend(crate::ui::browser::column_dirs(&t.location).into_iter());
+                s.extend(crate::ui::browser::column_dirs(&t.location));
                 if let Some(c) = &t.cursor {
                     s.insert(c.clone());
                 }
@@ -335,14 +355,14 @@ impl Workspace {
             }
             let error = done_rx.recv().await.ok().flatten();
             this.update(cx, |w, cx| {
-                if w.cache.finish(&path, generation, error) {
-                    if let Some(l) = w.cache.get(&path) {
-                        let entries = l.entries.clone();
-                        for p in &mut w.panes {
-                            for t in &mut p.tabs {
-                                if t.location == path {
-                                    t.reconcile(&entries);
-                                }
+                if w.cache.finish(&path, generation, error)
+                    && let Some(l) = w.cache.get(&path)
+                {
+                    let entries = l.entries.clone();
+                    for p in &mut w.panes {
+                        for t in &mut p.tabs {
+                            if t.location == path {
+                                t.reconcile(&entries);
                             }
                         }
                     }
@@ -581,27 +601,24 @@ impl Workspace {
                 .panes
                 .iter()
                 .map(|p| SessionPane {
-                    tabs: p
-                        .tabs
-                        .iter()
-                        .map(|t| SessionTab { location: t.location.clone(), view: t.view, sort: t.sort })
-                        .collect(),
+                    tabs: p.tabs.iter().map(|t| SessionTab { location: t.location.clone(), view: t.view, sort: t.sort }).collect(),
                     active: p.active,
                 })
                 .collect(),
             active_pane: self.active_pane,
             filters: self.filters,
         };
-        // Tiny files; written off the UI thread.
+        // Tiny files; written off the UI thread. The dir is resolved now, not when the job runs.
         let prefs = serde_json::to_value(&self.prefs).ok();
+        let dir = storage::data_dir();
         pool::local().execute(move || {
-            if let Err(e) = storage::save("session", &session) {
+            if let Err(e) = storage::save_in(&dir, "session", &session) {
                 tracing::warn!("saving session failed: {e}");
             }
-            if let Some(p) = prefs {
-                if let Err(e) = storage::save("prefs", &p) {
-                    tracing::warn!("saving prefs failed: {e}");
-                }
+            if let Some(p) = prefs
+                && let Err(e) = storage::save_in(&dir, "prefs", &p)
+            {
+                tracing::warn!("saving prefs failed: {e}");
             }
         });
     }
@@ -720,6 +737,14 @@ impl Workspace {
         .on_action(cx.listener(|w, _: &SelectPrev, _, cx| w.move_cursor(-1, false, cx)))
         .on_action(cx.listener(|w, _: &ExtendNext, _, cx| w.move_cursor(1, true, cx)))
         .on_action(cx.listener(|w, _: &ExtendPrev, _, cx| w.move_cursor(-1, true, cx)))
+        .on_action(cx.listener(|w, _: &SelectFirst, _, cx| w.move_to_edge(false, false, cx)))
+        .on_action(cx.listener(|w, _: &SelectLast, _, cx| w.move_to_edge(true, false, cx)))
+        .on_action(cx.listener(|w, _: &ExtendFirst, _, cx| w.move_to_edge(false, true, cx)))
+        .on_action(cx.listener(|w, _: &ExtendLast, _, cx| w.move_to_edge(true, true, cx)))
+        .on_action(cx.listener(|w, _: &SelectPageDown, _, cx| w.move_page(true, false, cx)))
+        .on_action(cx.listener(|w, _: &SelectPageUp, _, cx| w.move_page(false, false, cx)))
+        .on_action(cx.listener(|w, _: &ExtendPageDown, _, cx| w.move_page(true, true, cx)))
+        .on_action(cx.listener(|w, _: &ExtendPageUp, _, cx| w.move_page(false, true, cx)))
         .on_action(cx.listener(|w, _: &SelectLeft, _, cx| w.horizontal_move(-1, cx)))
         .on_action(cx.listener(|w, _: &SelectRight, _, cx| w.horizontal_move(1, cx)))
         .on_action(cx.listener(|w, _: &OpenItems, _, cx| {
@@ -753,6 +778,11 @@ impl Workspace {
             w.prefs.show_extensions = !w.prefs.show_extensions;
             w.save_session();
             cx.notify();
+        }))
+        .on_action(cx.listener(|w, _: &ToggleFoldersFirst, _, cx| {
+            w.prefs.folders_first = !w.prefs.folders_first;
+            w.save_session();
+            w.scroll_cursor_into_view(cx);
         }))
         .on_action(cx.listener(|w, _: &ToggleSizeColumn, _, cx| w.toggle_column("Size", cx)))
         .on_action(cx.listener(|w, _: &ToggleKindColumn, _, cx| w.toggle_column("Kind", cx)))
@@ -866,23 +896,59 @@ impl Workspace {
         }
         self.remember_folder_view();
         self.save_session();
-        cx.notify();
+        self.scroll_cursor_into_view(cx);
+    }
+
+    /// After a re-sort the cursor keeps its entry, but its row may now be off screen.
+    fn scroll_cursor_into_view(&mut self, cx: &mut Context<Self>) {
+        self.move_cursor_with(cx, |_, _| {});
     }
 
     fn move_cursor(&mut self, delta: isize, extend: bool, cx: &mut Context<Self>) {
+        self.move_cursor_with(cx, |t, rows| t.move_cursor(rows, delta, extend));
+    }
+
+    fn move_to_edge(&mut self, last: bool, extend: bool, cx: &mut Context<Self>) {
+        self.move_cursor_with(cx, |t, rows| t.move_to_edge(rows, last, extend));
+    }
+
+    fn move_page(&mut self, down: bool, extend: bool, cx: &mut Context<Self>) {
+        let page = self.visible_page_rows();
+        self.move_cursor_with(cx, |t, rows| t.move_page(rows, page, down, extend));
+    }
+
+    /// Entries that fit the active tab's viewport, taken from its last layout: list rows, or whole
+    /// tile rows in icons view so the cursor keeps its column.
+    fn visible_page_rows(&self) -> usize {
+        let viewport = self.scroll.get(&self.tab().id).and_then(|h| h.0.borrow().last_item_size);
+        // shortcut: columns reuse the last list/icon viewport (or 10 before any layout), which may be
+        // stale, and column lists don't scroll the cursor into view; group-by-kind headers count as
+        // rows, so a grouped page is a little short. Track column sizes if that ever matters.
+        let Some(height) = viewport.map(|s| s.item.height.to_f64() as f32) else { return 10 };
+        if self.tab().view == ViewMode::Icons {
+            let per_row = self.icons_per_row.get();
+            return ((height / crate::ui::browser::ICON_ROW_H) as usize).max(1) * per_row;
+        }
+        (height / theme::ROW_H) as usize
+    }
+
+    /// Applies a cursor move to the active tab, then keeps the cursor row visible.
+    fn move_cursor_with(&mut self, cx: &mut Context<Self>, mv: impl FnOnce(&mut Tab, &[&Entry])) {
         let mut t = self.tab().clone();
         let rows = self.rows_for(&t);
-        t.move_cursor(&rows, delta, extend);
+        mv(&mut t, &rows);
         let ix = t.cursor.as_ref().and_then(|c| rows.iter().position(|e| &e.path == c));
         let id = t.id;
         let view = t.view;
         *self.tab_mut() = t;
         if let (Some(ix), Some(h)) = (ix, self.scroll.get(&id)) {
-            if view != ViewMode::Icons {
+            let item = if view == ViewMode::Icons {
+                ix / self.icons_per_row.get()
+            } else {
                 let tab = self.tab();
-                let shown = crate::ui::browser::display_index(&self.rows_for(tab), tab.sort.group_kind, ix);
-                h.scroll_to_item(shown, ScrollStrategy::Nearest);
-            }
+                crate::ui::browser::display_index(&self.rows_for(tab), tab.sort.group_kind, ix)
+            };
+            h.scroll_to_item(item, ScrollStrategy::Nearest);
         }
         if view == ViewMode::Columns {
             self.refresh_visible(cx);
@@ -933,17 +999,23 @@ impl Workspace {
     }
 
     pub fn add_favorite(&mut self, cx: &mut Context<Self>) {
-        let target = self
-            .selected_entries()
-            .into_iter()
-            .find(|e| e.is_dir())
-            .map(|e| e.path)
-            .unwrap_or_else(|| self.tab().location.clone());
+        let target =
+            self.selected_entries().into_iter().find(|e| e.is_dir()).map(|e| e.path).unwrap_or_else(|| self.tab().location.clone());
         if !self.prefs.favorites.contains(&target) {
             self.prefs.favorites.push(target);
             self.save_session();
         }
         cx.notify();
+    }
+
+    /// Finder's standard tag for an English key ("Blue"), as read at startup (D-3).
+    pub fn standard_tag(&self, english: &str) -> Option<&wfs::tags::Tag> {
+        self.standard_tags.iter().find(|(key, ..)| *key == english).map(|(.., tag)| tag)
+    }
+
+    /// Shown name of a tag filter key: Finder's localized name for a standard tag, else the key.
+    pub fn tag_label(&self, key: &str) -> String {
+        self.standard_tag(key).map_or_else(|| key.to_owned(), |t| t.name.clone())
     }
 
     /// Sidebar tag filter (v0.3): Spotlight query scoped to home, scan fallback.
@@ -972,7 +1044,12 @@ impl Workspace {
         let labels: Vec<&'static str> = commands.iter().map(|(l, _)| *l).collect();
         let actions: std::rc::Rc<Vec<Box<dyn Action>>> = std::rc::Rc::new(commands.into_iter().map(|(_, a)| a).collect());
         let focus = self.pane_focus[self.active_pane].clone();
-        window.open_dialog(cx, move |dialog, _, _| {
+        let first = std::cell::Cell::new(true);
+        window.open_dialog(cx, move |dialog, window, cx| {
+            // Without focus in the search field, typing goes nowhere and Return only closes the dialog.
+            if first.replace(false) {
+                state.focus_handle(cx).focus(window, cx);
+            }
             let state = state.clone();
             let labels = labels.clone();
             let actions = actions.clone();
@@ -1006,8 +1083,4 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::ui::chrome::render_workspace(self, window, cx)
     }
-}
-
-pub fn palette_color(cx: &App) -> theme::Palette {
-    palette(cx)
 }

@@ -45,10 +45,7 @@ pub fn is_network_path(path: &Path) -> bool {
         refresh_mounts();
     }
     let m = MOUNTS.read().unwrap();
-    m.iter()
-        .filter(|m| path.starts_with(&m.path))
-        .max_by_key(|m| m.path.as_os_str().len())
-        .is_some_and(|m| !m.local)
+    m.iter().filter(|m| path.starts_with(&m.path)).max_by_key(|m| m.path.as_os_str().len()).is_some_and(|m| !m.local)
 }
 
 fn read_mount_table() -> Vec<Mount> {
@@ -67,8 +64,7 @@ fn read_mount_table() -> Vec<Mount> {
             let path = PathBuf::from(cstr(&s.f_mntonname));
             let flags = s.f_flags as i32;
             let local = flags & libc::MNT_LOCAL != 0;
-            let user_visible = path == Path::new("/")
-                || (path.starts_with("/Volumes") && flags & libc::MNT_DONTBROWSE == 0);
+            let user_visible = path == Path::new("/") || (path.starts_with("/Volumes") && flags & libc::MNT_DONTBROWSE == 0);
             Mount { path, fs_type: cstr(&s.f_fstypename), source: cstr(&s.f_mntfromname), local, user_visible }
         })
         .collect()

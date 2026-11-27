@@ -86,37 +86,22 @@ impl Session {
         command.env("PWD", &cwd);
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
-        if ["LANG", "LC_ALL", "LC_CTYPE"]
-            .iter()
-            .all(|name| std::env::var_os(name).is_none())
-        {
+        if ["LANG", "LC_ALL", "LC_CTYPE"].iter().all(|name| std::env::var_os(name).is_none()) {
             // Apps launched from Finder have no locale; the line editor needs UTF-8.
             command.env("LANG", "en_US.UTF-8");
         }
 
         let (rows, cols) = (config.rows.max(1), config.cols.max(1));
-        let pair = native_pty_system()
-            .openpty(pty_size(rows, cols))
-            .map_err(io::Error::other)?;
-        let mut child = pair
-            .slave
-            .spawn_command(command)
-            .map_err(io::Error::other)?;
+        let pair = native_pty_system().openpty(pty_size(rows, cols)).map_err(io::Error::other)?;
+        let mut child = pair.slave.spawn_command(command).map_err(io::Error::other)?;
         drop(pair.slave);
         let reader = pair.master.try_clone_reader().map_err(io::Error::other)?;
         let writer = pair.master.take_writer().map_err(io::Error::other)?;
 
         let (input, input_rx) = mpsc::channel::<Vec<u8>>();
         let (changed_tx, changed) = async_channel::bounded(1);
-        let term_config = Config {
-            scrolling_history: SCROLLBACK_LINES,
-            osc52: Osc52::Disabled,
-            ..Config::default()
-        };
-        let size = GridSize {
-            rows: usize::from(rows),
-            cols: usize::from(cols),
-        };
+        let term_config = Config { scrolling_history: SCROLLBACK_LINES, osc52: Osc52::Disabled, ..Config::default() };
+        let size = GridSize { rows: usize::from(rows), cols: usize::from(cols) };
         let shared = Arc::new(Mutex::new(Shared {
             term: Term::new(term_config, &size, Responder(input.clone())),
             parser: Processor::new(),
@@ -125,28 +110,17 @@ impl Session {
             exited: false,
         }));
 
-        thread::Builder::new()
-            .name("terminal-writer".into())
-            .spawn(move || write_loop(writer, input_rx))?;
+        thread::Builder::new().name("terminal-writer".into()).spawn(move || write_loop(writer, input_rx))?;
         let killer = child.clone_killer();
         let reader_shared = Arc::clone(&shared);
-        thread::Builder::new()
-            .name("terminal-reader".into())
-            .spawn(move || {
-                read_loop(reader, &reader_shared, &changed_tx);
-                let _ = child.wait();
-                lock(&reader_shared).exited = true;
-                let _ = changed_tx.try_send(());
-            })?;
+        thread::Builder::new().name("terminal-reader".into()).spawn(move || {
+            read_loop(reader, &reader_shared, &changed_tx);
+            let _ = child.wait();
+            lock(&reader_shared).exited = true;
+            let _ = changed_tx.try_send(());
+        })?;
 
-        Ok(Self {
-            shared,
-            input,
-            master: pair.master,
-            killer,
-            integration,
-            changed,
-        })
+        Ok(Self { shared, input, master: pair.master, killer, integration, changed })
     }
 
     /// Fires (coalesced) whenever the screen, shell events or exit state changed.
@@ -183,15 +157,10 @@ impl Session {
     pub fn resize(&self, rows: u16, cols: u16) {
         let (rows, cols) = (rows.max(1), cols.max(1));
         let mut shared = lock(&self.shared);
-        if shared.term.screen_lines() == usize::from(rows)
-            && shared.term.columns() == usize::from(cols)
-        {
+        if shared.term.screen_lines() == usize::from(rows) && shared.term.columns() == usize::from(cols) {
             return;
         }
-        shared.term.resize(GridSize {
-            rows: usize::from(rows),
-            cols: usize::from(cols),
-        });
+        shared.term.resize(GridSize { rows: usize::from(rows), cols: usize::from(cols) });
         let _ = self.master.resize(pty_size(rows, cols));
     }
 
@@ -225,11 +194,7 @@ impl Drop for Session {
     }
 }
 
-fn read_loop(
-    mut reader: Box<dyn Read + Send>,
-    shared: &Mutex<Shared>,
-    changed: &async_channel::Sender<()>,
-) {
+fn read_loop(mut reader: Box<dyn Read + Send>, shared: &Mutex<Shared>, changed: &async_channel::Sender<()>) {
     let mut buf = vec![0u8; 64 * 1024];
     loop {
         let count = match reader.read(&mut buf) {
@@ -238,13 +203,7 @@ fn read_loop(
         };
         let bytes = &buf[..count];
         let mut guard = lock(shared);
-        let Shared {
-            term,
-            parser,
-            scanner,
-            events,
-            ..
-        } = &mut *guard;
+        let Shared { term, parser, scanner, events, .. } = &mut *guard;
         scanner.scan(bytes, events);
         parser.advance(term, bytes);
         drop(guard);
@@ -254,29 +213,18 @@ fn read_loop(
 
 fn write_loop(mut writer: Box<dyn Write + Send>, input: mpsc::Receiver<Vec<u8>>) {
     while let Ok(bytes) = input.recv() {
-        if writer
-            .write_all(&bytes)
-            .and_then(|()| writer.flush())
-            .is_err()
-        {
+        if writer.write_all(&bytes).and_then(|()| writer.flush()).is_err() {
             return;
         }
     }
 }
 
 fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
-    shared
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    shared.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn pty_size(rows: u16, cols: u16) -> PtySize {
-    PtySize {
-        rows,
-        cols,
-        pixel_width: 0,
-        pixel_height: 0,
-    }
+    PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }
 }
 
 fn start_dir(cwd: &Path) -> PathBuf {
@@ -309,34 +257,21 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    fn wait_for(
-        session: &Session,
-        what: &str,
-        condition: impl Fn(&TerminalSnapshot) -> bool,
-    ) -> TerminalSnapshot {
+    fn wait_for(session: &Session, what: &str, condition: impl Fn(&TerminalSnapshot) -> bool) -> TerminalSnapshot {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let snapshot = session.snapshot();
             if condition(&snapshot) {
                 return snapshot;
             }
-            assert!(
-                Instant::now() < deadline,
-                "timed out waiting for {what}: {:#?}",
-                snapshot.text_lines()
-            );
+            assert!(Instant::now() < deadline, "timed out waiting for {what}: {:#?}", snapshot.text_lines());
             thread::sleep(Duration::from_millis(20));
         }
     }
 
     fn spawn(shell: &str, cwd: &Path, integration: bool) -> Session {
-        let config = SessionConfig {
-            cwd: cwd.to_path_buf(),
-            shell: Some(shell.into()),
-            shell_integration: integration,
-            rows: 24,
-            cols: 80,
-        };
+        let config =
+            SessionConfig { cwd: cwd.to_path_buf(), shell: Some(shell.into()), shell_integration: integration, rows: 24, cols: 80 };
         Session::spawn(config).expect("spawn shell")
     }
 
@@ -346,9 +281,7 @@ mod tests {
         let session = spawn("/bin/sh", dir.path(), true);
         assert!(matches!(session.integration(), Integration::Unsupported(_)));
         session.write(b"echo hi$((40+2))\r".to_vec());
-        wait_for(&session, "echo output", |snap| {
-            snap.text_lines().iter().any(|line| line == "hi42")
-        });
+        wait_for(&session, "echo output", |snap| snap.text_lines().iter().any(|line| line == "hi42"));
         session.resize(10, 40);
         assert_eq!(session.snapshot().rows.len(), 10);
         assert_eq!(session.snapshot().rows[0].len(), 40);
@@ -360,12 +293,8 @@ mod tests {
     fn scrollback_is_capped() {
         let dir = tempfile::tempdir().expect("tempdir");
         let session = spawn("/bin/sh", dir.path(), false);
-        session.write(
-            b"i=0; while [ $i -lt 10100 ]; do echo line$i; i=$((i+1)); done; echo done\r".to_vec(),
-        );
-        wait_for(&session, "loop end", |snap| {
-            snap.text_lines().iter().any(|line| line == "done")
-        });
+        session.write(b"i=0; while [ $i -lt 10100 ]; do echo line$i; i=$((i+1)); done; echo done\r".to_vec());
+        wait_for(&session, "loop end", |snap| snap.text_lines().iter().any(|line| line == "done"));
         let shared = lock(&session.shared);
         assert!(shared.term.grid().history_size() <= SCROLLBACK_LINES);
         assert!(shared.term.grid().history_size() >= SCROLLBACK_LINES - 24);
@@ -386,10 +315,7 @@ mod tests {
             unsafe { std::env::set_var("ZDOTDIR", &home) };
             spawn("/bin/zsh", &start, true)
         };
-        assert_eq!(
-            session.integration(),
-            &Integration::Supported(super::super::shell::ShellKind::Zsh)
-        );
+        assert_eq!(session.integration(), &Integration::Supported(super::super::shell::ShellKind::Zsh));
         let mut follow = super::super::follow::FollowController::new(session.integration());
         follow.set_mode(super::super::follow::FollowMode::TwoWay);
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -397,10 +323,7 @@ mod tests {
         loop {
             for event in session.take_events() {
                 let out = follow.on_shell_event(event);
-                assert_eq!(
-                    out.user_cwd, None,
-                    "own cd must not come back as a user change"
-                );
+                assert_eq!(out.user_cwd, None, "own cd must not come back as a user change");
                 if let Some(bytes) = out.write {
                     session.write(bytes);
                 }
@@ -411,41 +334,23 @@ mod tests {
                     session.write(bytes);
                 }
             }
-            if injected
-                && follow.cwd() == Some(target.as_path())
-                && follow.prompt_state() != super::super::follow::PromptState::Busy
-            {
+            if injected && follow.cwd() == Some(target.as_path()) && follow.prompt_state() != super::super::follow::PromptState::Busy {
                 break;
             }
-            assert!(
-                Instant::now() < deadline,
-                "no cwd report: {:?} {:#?}",
-                follow.cwd(),
-                session.snapshot().text_lines()
-            );
+            assert!(Instant::now() < deadline, "no cwd report: {:?} {:#?}", follow.cwd(), session.snapshot().text_lines());
             thread::sleep(Duration::from_millis(20));
         }
 
         // Output of a command cannot forge markers, and the nonce never reaches children.
         session.write(
-            b"printf '\\e]133;D\\a\\e]7;file:///forged\\a\\e]133;A\\a'; printf 'env-%s\\n' \"$(env | grep -c WAYFOLD_NONCE)\"\r"
-                .to_vec(),
+            b"printf '\\e]133;D\\a\\e]7;file:///forged\\a\\e]133;A\\a'; printf 'env-%s\\n' \"$(env | grep -c WAYFOLD_NONCE)\"\r".to_vec(),
         );
         let deadline = Instant::now() + Duration::from_secs(10);
-        while !session
-            .snapshot()
-            .text_lines()
-            .iter()
-            .any(|line| line == "env-0")
-        {
+        while !session.snapshot().text_lines().iter().any(|line| line == "env-0") {
             for event in session.take_events() {
                 follow.on_shell_event(event);
             }
-            assert!(
-                Instant::now() < deadline,
-                "{:#?}",
-                session.snapshot().text_lines()
-            );
+            assert!(Instant::now() < deadline, "{:#?}", session.snapshot().text_lines());
             thread::sleep(Duration::from_millis(20));
         }
         thread::sleep(Duration::from_millis(100));

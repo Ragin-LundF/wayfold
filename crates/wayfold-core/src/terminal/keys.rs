@@ -12,22 +12,11 @@ pub struct KeyMods {
 
 /// `key` is the key name (`"enter"`, `"a"`), `key_char` the typed text if any.
 /// `app_cursor` is the terminal's DECCKM mode. `None`: not terminal input.
-pub fn encode_key(
-    key: &str,
-    key_char: Option<&str>,
-    mods: KeyMods,
-    app_cursor: bool,
-) -> Option<Vec<u8>> {
+pub fn encode_key(key: &str, key_char: Option<&str>, mods: KeyMods, app_cursor: bool) -> Option<Vec<u8>> {
     if mods.platform {
         return None;
     }
-    let cursor = |code: u8| -> Vec<u8> {
-        if app_cursor {
-            vec![0x1b, b'O', code]
-        } else {
-            vec![0x1b, b'[', code]
-        }
-    };
+    let cursor = |code: u8| -> Vec<u8> { if app_cursor { vec![0x1b, b'O', code] } else { vec![0x1b, b'[', code] } };
     let bytes = match key {
         "enter" => vec![b'\r'],
         "tab" if mods.shift => b"\x1b[Z".to_vec(),
@@ -46,9 +35,7 @@ pub fn encode_key(
         "space" if mods.control => vec![0],
         _ if mods.control => return control_byte(key).map(|byte| vec![byte]),
         _ => {
-            return key_char
-                .filter(|text| !text.is_empty())
-                .map(|text| text.as_bytes().to_vec());
+            return key_char.filter(|text| !text.is_empty()).map(|text| text.as_bytes().to_vec());
         }
     };
     Some(bytes)
@@ -83,14 +70,8 @@ mod tests {
         assert_eq!(plain("enter", Some("\n")), Some(b"\r".to_vec()));
         assert_eq!(plain("backspace", None), Some(vec![0x7f]));
         assert_eq!(plain("up", None), Some(b"\x1b[A".to_vec()));
-        assert_eq!(
-            encode_key("up", None, KeyMods::default(), true),
-            Some(b"\x1bOA".to_vec())
-        );
-        let ctrl = KeyMods {
-            control: true,
-            ..KeyMods::default()
-        };
+        assert_eq!(encode_key("up", None, KeyMods::default(), true), Some(b"\x1bOA".to_vec()));
+        let ctrl = KeyMods { control: true, ..KeyMods::default() };
         assert_eq!(encode_key("c", None, ctrl, false), Some(vec![0x03]));
         assert_eq!(encode_key("[", None, ctrl, false), Some(vec![0x1b]));
         assert_eq!(encode_key("f5", None, KeyMods::default(), false), None);
@@ -98,10 +79,7 @@ mod tests {
 
     #[test]
     fn command_keys_are_left_to_the_app() {
-        let cmd = KeyMods {
-            platform: true,
-            ..KeyMods::default()
-        };
+        let cmd = KeyMods { platform: true, ..KeyMods::default() };
         assert_eq!(encode_key("v", Some("v"), cmd, false), None);
     }
 }

@@ -34,7 +34,13 @@ pub struct ScanReport {
 }
 
 /// Depth-first walk calling `visit` for every non-excluded entry. Returns false from `visit` to stop.
-fn walk(root: &Path, opts: &ScanOptions, cancel: &CancelToken, report: &mut ScanReport, mut visit: impl FnMut(&Path, &fs::Metadata) -> bool) {
+fn walk(
+    root: &Path,
+    opts: &ScanOptions,
+    cancel: &CancelToken,
+    report: &mut ScanReport,
+    mut visit: impl FnMut(&Path, &fs::Metadata) -> bool,
+) {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         if cancel.is_cancelled() {
@@ -67,7 +73,13 @@ fn walk(root: &Path, opts: &ScanOptions, cancel: &CancelToken, report: &mut Scan
 }
 
 /// Recursive filename search: case-insensitive substring of the name.
-pub fn find_names(root: &Path, needle: &str, opts: &ScanOptions, cancel: &CancelToken, mut on_batch: impl FnMut(Vec<PathBuf>)) -> ScanReport {
+pub fn find_names(
+    root: &Path,
+    needle: &str,
+    opts: &ScanOptions,
+    cancel: &CancelToken,
+    mut on_batch: impl FnMut(Vec<PathBuf>),
+) -> ScanReport {
     let needle = needle.to_lowercase();
     let mut report = ScanReport::default();
     let mut batch = Vec::new();
@@ -213,7 +225,8 @@ mod tests {
         let t = fixture();
         fs::create_dir(t.path().join("locked")).unwrap();
         fs::set_permissions(t.path().join("locked"), std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
-        let q = ContentQuery { pattern: "find\\s+me".into(), regex: true, case_insensitive: true, extensions: vec![], max_file_bytes: 1 << 20 };
+        let q =
+            ContentQuery { pattern: "find\\s+me".into(), regex: true, case_insensitive: true, extensions: vec![], max_file_bytes: 1 << 20 };
         let mut hits = vec![];
         let r = find_content(t.path(), &q, &ScanOptions::default(), &CancelToken::new(), |b| hits.extend(b)).unwrap();
         fs::set_permissions(t.path().join("locked"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();

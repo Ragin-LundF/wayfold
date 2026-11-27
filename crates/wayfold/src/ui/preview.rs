@@ -4,14 +4,14 @@
 use crate::ui::browser::{format_time, icon, size_text, tag_dots};
 use crate::ui::theme::palette;
 use crate::ui::workspace::Workspace;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{h_flex, v_flex};
-use gpui_kit::*;
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::component::Sizable as _;
+use gpui_kit::*;
 use std::path::PathBuf;
-use wayfold_core::fs::{format_size, Entry};
+use wayfold_core::fs::{Entry, format_size};
 use wayfold_core::preview::{self, Preview};
 use wayfold_core::{platform, pool};
 
@@ -72,11 +72,13 @@ pub fn render_preview(w: &mut Workspace, _window: &mut Window, cx: &mut Context<
         .border_color(p.line)
         .child(div().font_weight(FontWeight::SEMIBOLD).child("Preview"))
         .child(div().flex_1())
-        .child(Button::new("preview-close").ghost().xsmall().icon(icon("x")).tooltip("Close preview (Space / Esc)").on_click(cx.listener(|w, _, window, cx| {
-            w.preview_open = false;
-            w.focus_browser(window, cx);
-            cx.notify();
-        })));
+        .child(Button::new("preview-close").ghost().xsmall().icon(icon("x")).tooltip("Close preview (Space / Esc)").on_click(cx.listener(
+            |w, _, window, cx| {
+                w.preview_open = false;
+                w.focus_browser(window, cx);
+                cx.notify();
+            },
+        )));
 
     let body: AnyElement = match entry {
         None => div().p_4().text_color(p.muted).child("Select a file to preview.").into_any_element(),
@@ -88,7 +90,12 @@ pub fn render_preview(w: &mut Workspace, _window: &mut Window, cx: &mut Context<
             };
             let meta = v_flex()
                 .gap_1()
-                .child(h_flex().gap_2().child(div().text_lg().font_weight(FontWeight::SEMIBOLD).truncate().child(e.display_name())).child(tag_dots(&e)))
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).truncate().child(e.display_name()))
+                        .child(tag_dots(&e)),
+                )
                 .child(div().text_sm().text_color(p.muted).child(SharedString::from(format!("{} · {}", e.kind_label(), size))))
                 .child(div().text_sm().text_color(p.muted).child(SharedString::from(format!("Modified {}", format_time(e.modified)))))
                 .child(div().text_xs().text_color(p.muted).child(SharedString::from(e.path.display().to_string())))
@@ -183,8 +190,13 @@ fn csv_table(rows: &[Vec<String>], truncated: bool, cx: &mut Context<Workspace>)
                 .when(i == 0, |d| d.bg(p.canvas).font_weight(FontWeight::SEMIBOLD))
                 .border_b_1()
                 .border_color(p.line.opacity(0.5))
-                .children(r.iter().map(|c| div().w(px(110.)).flex_none().px_1().py_0p5().text_xs().truncate().child(SharedString::from(c.clone()))))
+                .children(
+                    r.iter()
+                        .map(|c| div().w(px(110.)).flex_none().px_1().py_0p5().text_xs().truncate().child(SharedString::from(c.clone()))),
+                )
         }))
-        .when(truncated || rows.len() > 200, |d| d.child(div().text_xs().text_color(p.warning).child(format!("Showing first {} rows", rows.len().min(200)))))
+        .when(truncated || rows.len() > 200, |d| {
+            d.child(div().text_xs().text_color(p.warning).child(format!("Showing first {} rows", rows.len().min(200))))
+        })
         .into_any_element()
 }

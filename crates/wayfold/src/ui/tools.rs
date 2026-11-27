@@ -11,6 +11,16 @@ use gpui_kit::*;
 use std::path::PathBuf;
 use wayfold_core::archive::ArchiveFormat;
 
+/// Cell of a tool result table. Header and rows build their cells from the same widths, so the
+/// columns line up at any dialog width; `None` is the flexible column, which shrinks and truncates
+/// instead of pushing the fixed ones.
+pub fn table_cell(width: Option<f32>) -> Div {
+    match width {
+        Some(w) => div().flex_none().w(px(w)).overflow_hidden(),
+        None => div().flex_1().min_w_0().overflow_hidden(),
+    }
+}
+
 pub fn open_compare(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
     // Two panes: compare their folders. One pane: the folder and its parent.
     let (left, right) = match w.panes.as_slice() {
@@ -42,11 +52,17 @@ pub fn open_create_archive(w: &mut Workspace, window: &mut Window, cx: &mut Cont
     let dest_dir = w.tab().location.clone();
     let workspace = cx.entity().downgrade();
     let view = cx.new(|cx| CreateArchiveView::new(sources, dest_dir, workspace, window, cx));
-    window.open_dialog(cx, move |dialog, _, _| dialog.title("Create Archive").w(px(600.)).overlay_closable(false).child(view.clone()));
+    let child = view.clone();
+    window.open_dialog(cx, move |dialog, _, _| dialog.title("Create Archive").w(px(600.)).overlay_closable(false).child(child.clone()));
+    let own = window.focused(cx);
+    view.update(cx, |v, _| v.own_dialog.handle = own);
 }
 
 pub fn open_extract_archive(w: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
-    let archive = w.focused_entry().filter(|e| ArchiveFormat::detect(&e.path).is_some()).or_else(|| w.selected_entries().into_iter().find(|e| ArchiveFormat::detect(&e.path).is_some()));
+    let archive = w
+        .focused_entry()
+        .filter(|e| ArchiveFormat::detect(&e.path).is_some())
+        .or_else(|| w.selected_entries().into_iter().find(|e| ArchiveFormat::detect(&e.path).is_some()));
     let Some(archive) = archive else {
         w.notify_status("Select a ZIP, TAR, GZ, ZST, 7z or RAR archive to extract", cx);
         return;
@@ -54,5 +70,8 @@ pub fn open_extract_archive(w: &mut Workspace, window: &mut Window, cx: &mut Con
     let dest_dir = w.tab().location.clone();
     let workspace = cx.entity().downgrade();
     let view = cx.new(|cx| ExtractArchiveView::new(archive.path, dest_dir, workspace, window, cx));
-    window.open_dialog(cx, move |dialog, _, _| dialog.title("Extract Archive").w(px(820.)).overlay_closable(false).child(view.clone()));
+    let child = view.clone();
+    window.open_dialog(cx, move |dialog, _, _| dialog.title("Extract Archive").w(px(820.)).overlay_closable(false).child(child.clone()));
+    let own = window.focused(cx);
+    view.update(cx, |v, _| v.own_dialog.handle = own);
 }

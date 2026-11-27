@@ -63,15 +63,15 @@ impl Workspace {
 
     /// Successful moves clear their cut marks; failed items stay marked.
     pub fn clear_moved(&mut self, moved: &[PathBuf]) {
-        if let Some(c) = &mut self.clipboard {
-            if c.mode == ClipMode::Cut {
-                for p in moved {
-                    c.sources.remove(p);
-                }
-                c.revision += 1;
-                if c.sources.is_empty() {
-                    self.clipboard = None;
-                }
+        if let Some(c) = &mut self.clipboard
+            && c.mode == ClipMode::Cut
+        {
+            for p in moved {
+                c.sources.remove(p);
+            }
+            c.revision += 1;
+            if c.sources.is_empty() {
+                self.clipboard = None;
             }
         }
     }

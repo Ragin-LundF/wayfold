@@ -3,14 +3,22 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-#[cfg(not(test))]
 pub(crate) fn move_to_trash(path: &Path) -> io::Result<PathBuf> {
+    let data_dir_set = std::env::var_os("WAYFOLD_DATA_DIR").is_some();
+    if uses_test_trash(cfg!(test), cfg!(feature = "test-trash"), data_dir_set) {
+        return move_to_test_trash(path);
+    }
     ns_trash(path)
 }
 
-/// Tests never touch the user's Trash: items go to a folder in the test data dir instead.
-#[cfg(test)]
-pub(crate) fn move_to_trash(path: &Path) -> io::Result<PathBuf> {
+/// Tests never touch the user's Trash. Core tests always redirect. The `test-trash` feature (for UI tests
+/// in `wayfold`) can leak into the app binary through feature unification (`--all-targets`), so it only
+/// redirects when a test data dir is set.
+fn uses_test_trash(core_test: bool, feature: bool, data_dir_set: bool) -> bool {
+    core_test || (feature && data_dir_set)
+}
+
+fn move_to_test_trash(path: &Path) -> io::Result<PathBuf> {
     let dir = crate::storage::data_dir().join("test-trash");
     std::fs::create_dir_all(&dir)?;
     let name = path.file_name().ok_or(io::ErrorKind::InvalidInput)?;
@@ -32,6 +40,14 @@ pub(crate) fn ns_trash(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_alone_uses_real_trash_unless_data_dir_is_set() {
+        assert!(!uses_test_trash(false, true, false), "app binary with unified feature must use the real Trash");
+        assert!(uses_test_trash(false, true, true));
+        assert!(!uses_test_trash(false, false, true), "plain app build ignores WAYFOLD_DATA_DIR for Trash");
+        assert!(uses_test_trash(true, false, false), "core tests always redirect");
+    }
 
     /// Moves a synthetic file into the real user Trash; run manually with `--ignored`.
     #[test]

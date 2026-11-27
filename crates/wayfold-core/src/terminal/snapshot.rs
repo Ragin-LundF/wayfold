@@ -37,16 +37,7 @@ pub struct TerminalSnapshot {
 impl TerminalSnapshot {
     /// Visible text, one string per row with trailing blanks trimmed.
     pub fn text_lines(&self) -> Vec<String> {
-        self.rows
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(|cell| cell.ch)
-                    .collect::<String>()
-                    .trim_end()
-                    .to_owned()
-            })
-            .collect()
+        self.rows.iter().map(|row| row.iter().map(|cell| cell.ch).collect::<String>().trim_end().to_owned()).collect()
     }
 }
 
@@ -71,11 +62,7 @@ pub(super) fn capture<T: EventListener>(term: &Term<T>, exited: bool) -> Termina
                         underline: cell.flags.intersects(Flags::ALL_UNDERLINES),
                         inverse: cell.flags.contains(Flags::INVERSE),
                     };
-                    let ch = if cell.flags.contains(Flags::HIDDEN) {
-                        ' '
-                    } else {
-                        cell.c
-                    };
+                    let ch = if cell.flags.contains(Flags::HIDDEN) { ' ' } else { cell.c };
                     Some(SnapshotCell { ch, style })
                 })
                 .collect()
@@ -83,14 +70,9 @@ pub(super) fn capture<T: EventListener>(term: &Term<T>, exited: bool) -> Termina
         .collect();
     let point = grid.cursor.point;
     let cursor_row = point.line.0 + offset as i32;
-    let visible = term.mode().contains(TermMode::SHOW_CURSOR)
-        && (0..grid.screen_lines() as i32).contains(&cursor_row);
+    let visible = term.mode().contains(TermMode::SHOW_CURSOR) && (0..grid.screen_lines() as i32).contains(&cursor_row);
     let cursor = visible.then_some((cursor_row as usize, point.column.0));
-    TerminalSnapshot {
-        rows,
-        cursor,
-        exited,
-    }
+    TerminalSnapshot { rows, cursor, exited }
 }
 
 fn resolve(color: Color, colors: &Colors) -> Option<u32> {
@@ -113,18 +95,14 @@ fn pack(rgb: Rgb) -> u32 {
 /// The standard xterm 256-color palette (0-15 tuned for the dark terminal background).
 fn xterm_color(index: usize) -> u32 {
     const ANSI: [u32; 16] = [
-        0x2e3440, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xc8ccd4, 0x5c6370,
-        0xff7a85, 0xb5e890, 0xffd68a, 0x82c4ff, 0xde9bf0, 0x7fd4de, 0xffffff,
+        0x2e3440, 0xe06c75, 0x98c379, 0xe5c07b, 0x61afef, 0xc678dd, 0x56b6c2, 0xc8ccd4, 0x5c6370, 0xff7a85, 0xb5e890, 0xffd68a, 0x82c4ff,
+        0xde9bf0, 0x7fd4de, 0xffffff,
     ];
     match index {
         0..=15 => ANSI[index],
         16..=231 => {
             let level = |value: usize| {
-                if value == 0 {
-                    0
-                } else {
-                    55 + value as u32 * 40
-                }
+                if value == 0 { 0 } else { 55 + value as u32 * 40 }
             };
             let cube = index - 16;
             level(cube / 36) << 16 | level(cube / 6 % 6) << 8 | level(cube % 6)

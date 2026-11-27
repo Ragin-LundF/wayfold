@@ -34,11 +34,35 @@ pub fn shell_kind(shell: &Path) -> Option<ShellKind> {
     }
 }
 
-/// The user's login shell: `$SHELL`, falling back to `/bin/zsh`.
+/// The user's login shell: `$SHELL`, else the account's shell (an app started from Finder may
+/// have no `$SHELL`), else `/bin/zsh`.
 pub fn login_shell() -> PathBuf {
     std::env::var_os("SHELL")
         .filter(|shell| !shell.is_empty())
-        .map_or_else(|| PathBuf::from("/bin/zsh"), PathBuf::from)
+        .map(PathBuf::from)
+        .or_else(account_shell)
+        .unwrap_or_else(|| PathBuf::from("/bin/zsh"))
+}
+
+fn account_shell() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut result = std::ptr::null_mut();
+    let mut buf = vec![0 as libc::c_char; 4096];
+    loop {
+        // SAFETY: all pointers are valid; on success the strings point into `buf`.
+        let rc = unsafe { libc::getpwuid_r(libc::getuid(), &mut pwd, buf.as_mut_ptr(), buf.len(), &mut result) };
+        if rc != libc::ERANGE || buf.len() >= 1 << 20 {
+            break;
+        }
+        buf.resize(buf.len() * 2, 0);
+    }
+    if result.is_null() || pwd.pw_shell.is_null() {
+        return None;
+    }
+    // SAFETY: pw_shell is a NUL-terminated string inside `buf`, which is still alive.
+    let bytes = unsafe { std::ffi::CStr::from_ptr(pwd.pw_shell) }.to_bytes();
+    (!bytes.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(bytes)))
 }
 
 /// The full line typed at an idle prompt to change directory, including Enter.
@@ -92,28 +116,16 @@ fn classify(bytes: &[u8]) -> Vec<(u8, bool)> {
             .flat_map(|ch| {
                 let mut buf = [0; 4];
                 let escape = ch.is_control();
-                ch.encode_utf8(&mut buf)
-                    .as_bytes()
-                    .iter()
-                    .map(move |&b| (b, escape))
-                    .collect::<Vec<_>>()
+                ch.encode_utf8(&mut buf).as_bytes().iter().map(move |&b| (b, escape)).collect::<Vec<_>>()
             })
             .collect(),
-        Err(_) => bytes
-            .iter()
-            .map(|&b| (b, !(0x20..0x7f).contains(&b)))
-            .collect(),
+        Err(_) => bytes.iter().map(|&b| (b, !(0x20..0x7f).contains(&b))).collect(),
     }
 }
 
 fn hex_escape(byte: u8) -> [u8; 4] {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    [
-        b'\\',
-        b'x',
-        HEX[usize::from(byte >> 4)],
-        HEX[usize::from(byte & 0xf)],
-    ]
+    [b'\\', b'x', HEX[usize::from(byte >> 4)], HEX[usize::from(byte & 0xf)]]
 }
 
 /// Builds the command for `shell`, with integration hooks if `enabled` and supported. The
@@ -121,62 +133,37 @@ fn hex_escape(byte: u8) -> [u8; 4] {
 pub fn shell_command(shell: &Path, enabled: bool, nonce: &str) -> (CommandBuilder, Integration) {
     let mut command = CommandBuilder::new(shell);
     let Some(kind) = shell_kind(shell) else {
-        let name = shell
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = shell.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
         let reason = format!("Shell integration supports zsh, bash and fish, not {name}.");
         return (command, Integration::Unsupported(reason));
     };
     if !enabled {
         command.arg("-l");
-        return (
-            command,
-            Integration::Unsupported("Shell integration is turned off.".into()),
-        );
+        return (command, Integration::Unsupported("Shell integration is turned off.".into()));
     }
     let dir = match integration_dir() {
         Ok(dir) => dir,
         Err(error) => {
             command.arg("-l");
-            return (
-                command,
-                Integration::Unsupported(format!(
-                    "Shell integration could not be installed: {error}"
-                )),
-            );
+            return (command, Integration::Unsupported(format!("Shell integration could not be installed: {error}")));
         }
     };
     // The scripts move it into a non-exported shell variable, so child processes never see it.
     command.env("WAYFOLD_NONCE", nonce);
     match kind {
         ShellKind::Zsh => {
-            let user_zdotdir = std::env::var_os("ZDOTDIR")
-                .or_else(|| std::env::var_os("HOME"))
-                .unwrap_or_default();
+            let user_zdotdir = std::env::var_os("ZDOTDIR").or_else(|| std::env::var_os("HOME")).unwrap_or_default();
             command.env("WAYFOLD_USER_ZDOTDIR", user_zdotdir);
             command.env("ZDOTDIR", dir.join("zsh"));
             command.arg("-l");
         }
         ShellKind::Bash => {
             // `--rcfile` only works for non-login shells; the rc file sources the login files itself.
-            command.args([
-                OsString::from("--rcfile"),
-                dir.join("bash-rc").into_os_string(),
-                OsString::from("-i"),
-            ]);
+            command.args([OsString::from("--rcfile"), dir.join("bash-rc").into_os_string(), OsString::from("-i")]);
         }
         ShellKind::Fish => {
-            let source = [
-                b"source ".as_slice(),
-                &quote(kind, dir.join("wayfold.fish").as_os_str().as_bytes()),
-            ]
-            .concat();
-            command.args([
-                OsString::from("-l"),
-                OsString::from("--init-command"),
-                std::ffi::OsStr::from_bytes(&source).to_owned(),
-            ]);
+            let source = [b"source ".as_slice(), &quote(kind, dir.join("wayfold.fish").as_os_str().as_bytes())].concat();
+            command.args([OsString::from("-l"), OsString::from("--init-command"), std::ffi::OsStr::from_bytes(&source).to_owned()]);
         }
     }
     (command, Integration::Supported(kind))
@@ -253,11 +240,7 @@ end
 /// Writes the scripts once per process into a private directory under the user's temp dir.
 fn integration_dir() -> Result<PathBuf, String> {
     static DIR: OnceLock<Result<PathBuf, String>> = OnceLock::new();
-    DIR.get_or_init(|| {
-        install_scripts(&std::env::temp_dir().join("wayfold-shell-integration-v2"))
-            .map_err(|e| e.to_string())
-    })
-    .clone()
+    DIR.get_or_init(|| install_scripts(&std::env::temp_dir().join("wayfold-shell-integration-v2")).map_err(|e| e.to_string())).clone()
 }
 
 fn install_scripts(dir: &Path) -> io::Result<PathBuf> {
@@ -280,10 +263,7 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
     if !meta.is_dir() || meta.uid() != uid || meta.permissions().mode() & 0o077 != 0 {
-        return Err(io::Error::other(format!(
-            "{} is not a private directory",
-            dir.display()
-        )));
+        return Err(io::Error::other(format!("{} is not a private directory", dir.display())));
     }
     Ok(())
 }
@@ -333,18 +313,10 @@ mod tests {
                 .stderr(std::process::Stdio::null())
                 .spawn()
                 .expect("run shell");
-            std::io::Write::write_all(&mut child.stdin.take().expect("stdin"), &input)
-                .expect("write");
+            std::io::Write::write_all(&mut child.stdin.take().expect("stdin"), &input).expect("write");
             child.wait().expect("wait");
-            assert!(
-                !root.path().join("pwned").exists(),
-                "{shell}: {name:?} ran code"
-            );
-            assert_eq!(
-                fs::read(&result).expect("result"),
-                target.as_os_str().as_bytes(),
-                "{shell}: {name:?}"
-            );
+            assert!(!root.path().join("pwned").exists(), "{shell}: {name:?} ran code");
+            assert_eq!(fs::read(&result).expect("result"), target.as_os_str().as_bytes(), "{shell}: {name:?}");
             fs::remove_file(&result).expect("cleanup");
         }
     }
@@ -363,17 +335,9 @@ mod tests {
         let mut script = cd_command(kind, target);
         script.pop(); // the Enter key
         script.extend(b" && printf '%s' \"$PWD\"");
-        let output = Command::new(shell)
-            .arg("-c")
-            .arg(std::ffi::OsStr::from_bytes(&script))
-            .env_remove("CDPATH")
-            .output()
-            .expect("run shell");
-        assert!(
-            output.status.success(),
-            "{shell} failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let output =
+            Command::new(shell).arg("-c").arg(std::ffi::OsStr::from_bytes(&script)).env_remove("CDPATH").output().expect("run shell");
+        assert!(output.status.success(), "{shell} failed: {}", String::from_utf8_lossy(&output.stderr));
         output.stdout
     }
 
@@ -382,11 +346,7 @@ mod tests {
         for name in AWKWARD_NAMES {
             let target = root.path().join(name);
             fs::create_dir(&target).expect("create awkward dir");
-            assert_eq!(
-                run_cd(shell, kind, &target),
-                target.as_os_str().as_bytes(),
-                "{shell}: {name:?}"
-            );
+            assert_eq!(run_cd(shell, kind, &target), target.as_os_str().as_bytes(), "{shell}: {name:?}");
         }
     }
 
@@ -402,10 +362,7 @@ mod tests {
 
     #[test]
     fn fish_quoting_round_trips_when_installed() {
-        let Some(fish) = ["/opt/homebrew/bin/fish", "/usr/local/bin/fish"]
-            .into_iter()
-            .find(|p| Path::new(p).exists())
-        else {
+        let Some(fish) = ["/opt/homebrew/bin/fish", "/usr/local/bin/fish"].into_iter().find(|p| Path::new(p).exists()) else {
             eprintln!("fish not installed; skipped");
             return;
         };
@@ -417,14 +374,8 @@ mod tests {
         for name in AWKWARD_NAMES {
             for kind in [ShellKind::Zsh, ShellKind::Fish] {
                 let quoted = quote(kind, name.as_bytes());
-                assert!(
-                    !quoted.iter().any(|&b| b < 0x20 || b == 0x7f),
-                    "{kind:?} {name:?}"
-                );
-                assert!(
-                    !quoted.windows(2).any(|w| w == [0xc2, 0x85]),
-                    "C1 control kept raw"
-                );
+                assert!(!quoted.iter().any(|&b| b < 0x20 || b == 0x7f), "{kind:?} {name:?}");
+                assert!(!quoted.windows(2).any(|w| w == [0xc2, 0x85]), "C1 control kept raw");
             }
         }
         assert_eq!(quote(ShellKind::Bash, b"\xff\n"), b"$'\\xff\\x0a'");
@@ -433,11 +384,14 @@ mod tests {
     }
 
     #[test]
+    fn account_shell_is_an_absolute_path() {
+        let shell = account_shell().expect("this account has a login shell");
+        assert!(shell.is_absolute(), "{shell:?}");
+    }
+
+    #[test]
     fn detects_shells_by_name() {
-        assert_eq!(
-            shell_kind(Path::new("/opt/homebrew/bin/fish")),
-            Some(ShellKind::Fish)
-        );
+        assert_eq!(shell_kind(Path::new("/opt/homebrew/bin/fish")), Some(ShellKind::Fish));
         assert_eq!(shell_kind(Path::new("/bin/sh")), None);
         let (_, integration) = shell_command(Path::new("/bin/sh"), true, "n");
         assert!(matches!(integration, Integration::Unsupported(reason) if reason.contains("sh")));

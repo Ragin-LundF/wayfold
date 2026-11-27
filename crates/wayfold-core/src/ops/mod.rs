@@ -11,15 +11,12 @@ mod transfer;
 mod trash;
 mod undo;
 
-pub use batch_rename::{
-    apply_batch_rename, plan_batch_rename, CaseRule, RenameProblem, RenameRow, RenameRules, Sequence,
-};
+pub use batch_rename::{CaseRule, RenameProblem, RenameRow, RenameRules, Sequence, apply_batch_rename, plan_batch_rename};
 pub use fileops::{create_file, create_folder, create_symlink, duplicate, rename, restore, trash};
 pub use transfer::{
-    start_transfer, ConflictAction, ConflictResolution, TransferEvent, TransferHandle, TransferMode,
-    TransferRequest, TransferState,
+    ConflictAction, ConflictResolution, TransferEvent, TransferHandle, TransferMode, TransferRequest, TransferState, start_transfer,
 };
-pub use undo::{undo, RenamedItem, TrashedItem, UndoAction};
+pub use undo::{RenamedItem, TrashedItem, UndoAction, undo};
 
 use std::ffi::{CString, OsStr, OsString};
 use std::io;
@@ -120,11 +117,7 @@ fn first_free(dir: &Path, name: &OsStr, first: u32, stem_for: impl Fn(&[u8], u32
 pub(crate) fn rename_excl(from: &Path, to: &Path) -> io::Result<()> {
     let (f, t) = (cstr(from)?, cstr(to)?);
     // SAFETY: both are valid NUL-terminated paths.
-    if unsafe { libc::renamex_np(f.as_ptr(), t.as_ptr(), libc::RENAME_EXCL) } == 0 {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
-    }
+    if unsafe { libc::renamex_np(f.as_ptr(), t.as_ptr(), libc::RENAME_EXCL) } == 0 { Ok(()) } else { Err(io::Error::last_os_error()) }
 }
 
 pub(crate) fn cstr(p: &Path) -> io::Result<CString> {
@@ -138,10 +131,7 @@ pub(crate) fn exists(p: &Path) -> bool {
 /// Unique id for tasks and journal records, distinct across runs.
 pub(crate) fn next_id() -> String {
     static N: AtomicU64 = AtomicU64::new(0);
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or_default();
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default();
     format!("{ms:x}-{}", N.fetch_add(1, Ordering::Relaxed))
 }
 

@@ -3,44 +3,52 @@
 //! and asks on conflicts). Nothing is ever deleted.
 
 use crate::ui::browser::icon;
-use crate::ui::fileops::{field, footer};
-use crate::ui::theme::{palette, Palette};
+use crate::ui::fileops::{Segment, field, footer, segmented};
+use crate::ui::theme::{Palette, palette};
+use crate::ui::tools::table_cell;
 use crate::ui::workspace::{CancelGuard, Workspace};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::progress::Progress;
-use gpui_kit::component::{h_flex, v_flex, WindowExt as _};
-use gpui_kit::*;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
+use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use std::path::PathBuf;
 use wayfold_core::compare::{self, CompareEvent, CompareMode, CopyStep, DiffRow, DiffStatus, Direction};
 use wayfold_core::fs::format_size;
 use wayfold_core::ops::TransferMode;
 
 const ROW_H: f32 = 30.;
+const STATUS_W: Option<f32> = Some(150.);
+const SIDE_W: Option<f32> = Some(80.);
+const COPY_W: Option<f32> = Some(150.);
+const MODES: [Segment<CompareMode>; 2] =
+    [("mode-st", "Size + date", CompareMode::SizeTime), ("mode-cs", "Checksum", CompareMode::Checksum)];
 
 pub struct CompareView {
     workspace: WeakEntity<Workspace>,
     left: Entity<InputState>,
     right: Entity<InputState>,
-    mode: CompareMode,
-    rows: Vec<(DiffRow, Direction)>,
+    pub(crate) mode: CompareMode,
+    pub(crate) rows: Vec<(DiffRow, Direction)>,
     hide_same: bool,
     /// Indices into `rows` after the filter.
     visible: Vec<usize>,
     /// Roots of the scan that produced `rows`.
     roots: Option<(PathBuf, PathBuf)>,
     scan: Option<(CancelGuard, Task<()>)>,
-    running: bool,
+    pub(crate) running: bool,
     cancelled: bool,
     show_plan: bool,
 }
 
 impl CompareView {
     pub fn new(left: PathBuf, right: PathBuf, workspace: WeakEntity<Workspace>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = |p: PathBuf, window: &mut Window, cx: &mut Context<Self>| cx.new(|cx| InputState::new(window, cx).default_value(p.to_string_lossy().into_owned()));
+        let input = |p: PathBuf, window: &mut Window, cx: &mut Context<Self>| {
+            cx.new(|cx| InputState::new(window, cx).default_value(p.to_string_lossy().into_owned()))
+        };
         Self {
             workspace,
             left: input(left, window, cx),
@@ -151,32 +159,35 @@ impl CompareView {
             Some(s) => s.size.map(format_size).unwrap_or_else(|| "?".into()),
         };
         let dir_button = |id: &'static str, label: &'static str, d: Direction, cx: &mut Context<Self>| {
-            Button::new((id, ix))
-                .xsmall()
-                .label(label)
-                .selected(*dir == d)
-                .disabled(!row.allows(d))
-                .on_click(cx.listener(move |v, _, _, cx| {
+            Button::new((id, ix)).xsmall().label(label).selected(*dir == d).disabled(!row.allows(d)).on_click(cx.listener(
+                move |v, _, _, cx| {
                     v.rows[ix].1 = d;
                     cx.notify();
-                }))
+                },
+            ))
         };
         h_flex()
             .id(("cmp-row", ix))
+            .w_full()
             .h(px(ROW_H))
             .px_3()
             .gap_2()
             .text_sm()
             .border_b_1()
             .border_color(p.line.opacity(0.5))
-            .child(h_flex().w(px(150.)).gap_1().text_color(color).child(icon(icon_name).small()).child(label))
-            .child(div().flex_1().truncate().child(if row.rel.as_os_str().is_empty() { "(compared folder)".to_string() } else { row.rel.to_string_lossy().into_owned() }))
-            .child(div().w(px(80.)).text_color(p.muted).child(side(&row.left)))
-            .child(div().w(px(80.)).text_color(p.muted).child(side(&row.right)))
+            .child(table_cell(STATUS_W).flex().items_center().gap_1().text_color(color).child(icon(icon_name).small()).child(label))
+            .child(table_cell(None).truncate().debug_selector(move || format!("cmp-path-{ix}")).child(if row.rel.as_os_str().is_empty() {
+                "(compared folder)".to_string()
+            } else {
+                row.rel.to_string_lossy().into_owned()
+            }))
+            .child(table_cell(SIDE_W).text_color(p.muted).child(side(&row.left)))
+            .child(table_cell(SIDE_W).text_color(p.muted).child(side(&row.right)))
             .child(
-                h_flex()
-                    .w(px(150.))
+                table_cell(COPY_W)
+                    .flex()
                     .gap_1()
+                    .debug_selector(move || format!("cmp-copy-{ix}"))
                     .child(dir_button("to-right", "→", Direction::LeftToRight, cx))
                     .child(dir_button("to-left", "←", Direction::RightToLeft, cx))
                     .child(dir_button("skip", "Skip", Direction::Skip, cx)),
@@ -198,12 +209,15 @@ impl CompareView {
             .text_sm()
             .when(plan.is_empty(), |d| d.child(div().text_color(p.muted).child("Nothing to copy: choose → or ← on rows.")))
             .children(plan.iter().take(200).map(|s| {
-                let names: Vec<String> = s.sources.iter().take(6).map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned()).collect();
+                let names: Vec<String> =
+                    s.sources.iter().take(6).map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned()).collect();
                 let more = s.sources.len().saturating_sub(names.len());
                 let names = if more > 0 { format!("{} and {more} more", names.join(", ")) } else { names.join(", ") };
                 div().child(format!("Copy {} item(s) into {}: {names}", s.sources.len(), s.dest_dir.display()))
             }))
-            .child(div().text_color(p.muted).child("Existing items are never overwritten silently: the transfer asks to keep both, replace (old item to Trash) or skip."))
+            .child(div().text_color(p.muted).child(
+                "Existing items are never overwritten silently: the transfer asks to keep both, replace (old item to Trash) or skip.",
+            ))
     }
 }
 
@@ -231,13 +245,17 @@ impl Render for CompareView {
             count(|s| matches!(s, DiffStatus::Unreadable(_) | DiffStatus::ChangedDuringScan)),
         );
         let running = self.running;
-        let mode = self.mode;
-        let mode_button = |id: &'static str, label: &'static str, m: CompareMode, cx: &mut Context<Self>| {
-            Button::new(id).small().label(label).selected(mode == m).disabled(running).on_click(cx.listener(move |v, _, _, cx| {
-                v.mode = m;
+        let modes = segmented(
+            "cmp-mode",
+            &MODES,
+            self.mode,
+            running,
+            cx,
+            cx.listener(|v, m: &CompareMode, _, cx| {
+                v.mode = *m;
                 cx.notify();
-            }))
-        };
+            }),
+        );
         let planned = self.rows.iter().filter(|(r, d)| *d != Direction::Skip && r.allows(*d)).count();
         let list = uniform_list(
             "cmp-rows",
@@ -250,13 +268,17 @@ impl Render for CompareView {
         .h_full();
         v_flex()
             .gap_2()
-            .child(h_flex().gap_3().child(div().flex_1().child(field("Left folder", Input::new(&self.left)))).child(div().flex_1().child(field("Right folder", Input::new(&self.right)))))
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(div().flex_1().child(field("Left folder", Input::new(&self.left))))
+                    .child(div().flex_1().child(field("Right folder", Input::new(&self.right)))),
+            )
             .child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(mode_button("mode-st", "Size + date", CompareMode::SizeTime, cx))
-                    .child(mode_button("mode-cs", "Checksum", CompareMode::Checksum, cx))
+                    .child(modes)
                     .child(div().flex_1())
                     .child(
                         Checkbox::new("hide-same")
@@ -290,11 +312,11 @@ impl Render for CompareView {
                             .bg(p.panel)
                             .text_xs()
                             .text_color(p.muted)
-                            .child(div().w(px(150.)).child("Status"))
-                            .child(div().flex_1().child("Path"))
-                            .child(div().w(px(80.)).child("Left"))
-                            .child(div().w(px(80.)).child("Right"))
-                            .child(div().w(px(150.)).child("Copy")),
+                            .child(table_cell(STATUS_W).child("Status"))
+                            .child(table_cell(None).debug_selector(|| "cmp-h-path".into()).child("Path"))
+                            .child(table_cell(SIDE_W).child("Left"))
+                            .child(table_cell(SIDE_W).child("Right"))
+                            .child(table_cell(COPY_W).debug_selector(|| "cmp-h-copy".into()).child("Copy")),
                     )
                     .child(div().h(px(320.)).child(list)),
             )

@@ -1,21 +1,22 @@
 use super::*;
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::Write;
-use std::ffi::OsStr;
 use std::os::unix::fs::symlink;
 
 /// RAR 2.9 fixtures copied from the `unrar` crate's test data (MIT OR Apache-2.0):
 /// `version.rar` holds `VERSION` = "unrar-0.4.0"; `crypted.rar` holds `.gitignore`,
 /// encrypted with the password "unrar". RAR archives cannot be created here (OQ-2).
 const VERSION_RAR: &[u8] = &[
-    82, 97, 114, 33, 26, 7, 0, 207, 144, 115, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 15, 12, 116, 32, 128, 39, 0, 21, 0, 0, 0, 11, 0, 0, 0, 3, 69, 243, 125, 198, 164, 138, 7, 71,
-    29, 51, 7, 0, 164, 129, 0, 0, 86, 69, 82, 83, 73, 79, 78, 12, 0, 143, 236, 138, 69, 204, 35, 200, 72, 8, 131, 98, 254, 95, 221, 92, 83, 136, 240, 114, 196, 61, 123,
-    0, 64, 7, 0,
+    82, 97, 114, 33, 26, 7, 0, 207, 144, 115, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 15, 12, 116, 32, 128, 39, 0, 21, 0, 0, 0, 11, 0, 0, 0, 3, 69,
+    243, 125, 198, 164, 138, 7, 71, 29, 51, 7, 0, 164, 129, 0, 0, 86, 69, 82, 83, 73, 79, 78, 12, 0, 143, 236, 138, 69, 204, 35, 200, 72,
+    8, 131, 98, 254, 95, 221, 92, 83, 136, 240, 114, 196, 61, 123, 0, 64, 7, 0,
 ];
 const CRYPTED_RAR: &[u8] = &[
-    82, 97, 114, 33, 26, 7, 0, 207, 144, 115, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 211, 217, 116, 36, 132, 50, 0, 32, 0, 0, 0, 18, 0, 0, 0, 3, 243, 138, 3, 110, 45, 129, 3,
-    71, 29, 51, 10, 0, 164, 129, 0, 0, 46, 103, 105, 116, 105, 103, 110, 111, 114, 101, 137, 4, 186, 140, 147, 6, 67, 34, 31, 57, 133, 249, 111, 37, 95, 57, 207, 233,
-    33, 36, 6, 86, 60, 18, 79, 144, 6, 202, 252, 217, 98, 216, 95, 240, 199, 35, 50, 165, 46, 109, 196, 61, 123, 0, 64, 7, 0,
+    82, 97, 114, 33, 26, 7, 0, 207, 144, 115, 0, 0, 13, 0, 0, 0, 0, 0, 0, 0, 211, 217, 116, 36, 132, 50, 0, 32, 0, 0, 0, 18, 0, 0, 0, 3,
+    243, 138, 3, 110, 45, 129, 3, 71, 29, 51, 10, 0, 164, 129, 0, 0, 46, 103, 105, 116, 105, 103, 110, 111, 114, 101, 137, 4, 186, 140,
+    147, 6, 67, 34, 31, 57, 133, 249, 111, 37, 95, 57, 207, 233, 33, 36, 6, 86, 60, 18, 79, 144, 6, 202, 252, 217, 98, 216, 95, 240, 199,
+    35, 50, 165, 46, 109, 196, 61, 123, 0, 64, 7, 0,
 ];
 
 fn quiet() -> impl Fn(Progress) + Sync {
@@ -71,7 +72,14 @@ fn f08_round_trip_each_creation_format() {
     for format in ArchiveFormat::CREATE {
         let out = t.path().join(format!("out-{}", format.label()));
         fs::create_dir(&out).unwrap();
-        let archive = create_archive(&[docs.clone()], &out.join(format!("docs{}", format.extension())), format, &CancelToken::new(), &quiet()).unwrap();
+        let archive = create_archive(
+            std::slice::from_ref(&docs),
+            &out.join(format!("docs{}", format.extension())),
+            format,
+            &CancelToken::new(),
+            &quiet(),
+        )
+        .unwrap();
         let listing = list_entries(&archive, None, &CancelToken::new()).unwrap();
         let listed: Vec<&str> = listing.entries.iter().map(|e| e.name.trim_end_matches('/')).collect();
         for want in ["docs", "docs/a.txt", "docs/sub/b.txt", "docs/empty", "docs/link"] {
@@ -279,7 +287,9 @@ fn f08_unsupported_and_damaged_archives_report_errors() {
     let junk = t.path().join("junk.zip");
     fs::write(&junk, "not a zip at all").unwrap();
     assert!(extract(&junk, t.path(), None, Limits::default()).is_err());
-    assert!(create_archive(&[junk.clone()], &t.path().join("x.7z"), ArchiveFormat::SevenZ, &CancelToken::new(), &quiet()).is_err());
+    assert!(
+        create_archive(std::slice::from_ref(&junk), &t.path().join("x.7z"), ArchiveFormat::SevenZ, &CancelToken::new(), &quiet()).is_err()
+    );
     assert_eq!(names(t.path()), ["file.docx", "junk.zip"]);
 }
 

@@ -105,7 +105,12 @@ impl Walk<'_> {
         let (l, r) = match (l, r) {
             (Ok(l), Ok(r)) => (l, r),
             (Err(e), _) | (_, Err(e)) => {
-                return self.push(DiffRow { rel: rel.to_path_buf(), left: None, right: None, status: DiffStatus::Unreadable(e.to_string()) });
+                return self.push(DiffRow {
+                    rel: rel.to_path_buf(),
+                    left: None,
+                    right: None,
+                    status: DiffStatus::Unreadable(e.to_string()),
+                });
             }
         };
         let all: BTreeSet<&OsString> = l.iter().chain(r.iter()).collect();
@@ -185,11 +190,7 @@ pub(crate) fn compare_pair_with(left: &Path, right: &Path, mode: CompareMode, ca
     let unchanged = |p: &Path, before: &Metadata| {
         fs::symlink_metadata(p).is_ok_and(|now| now.len() == before.len() && now.modified().ok() == before.modified().ok())
     };
-    if unchanged(left, &a) && unchanged(right, &b) {
-        status
-    } else {
-        DiffStatus::ChangedDuringScan
-    }
+    if unchanged(left, &a) && unchanged(right, &b) { status } else { DiffStatus::ChangedDuringScan }
 }
 
 fn secs(md: &Metadata) -> Option<u64> {
@@ -266,7 +267,7 @@ pub fn copy_plan(left: &Path, right: &Path, rows: &[(DiffRow, Direction)]) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::{PermissionsExt, symlink};
     use std::time::Duration;
 
     fn write(p: &Path, s: &str) {

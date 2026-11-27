@@ -4,19 +4,20 @@
 use crate::app::state::TabId;
 use crate::ui::browser::{entry_icon, format_time, size_text, tag_dots};
 use crate::ui::fileops::{field, footer};
-use crate::ui::theme::{palette, ROW_H};
+use crate::ui::theme::{ROW_H, palette};
 use crate::ui::workspace::{CancelGuard, Workspace};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::{h_flex, v_flex, WindowExt as _};
-use gpui_kit::*;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::{Selectable as _, Sizable as _};
+use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use wayfold_core::fs::{stat_entry, Entry};
+use wayfold_core::fs::tags::Tag;
+use wayfold_core::fs::{Entry, stat_entry};
 use wayfold_core::platform::spotlight;
 use wayfold_core::pool::{self, CancelToken};
 use wayfold_core::search::{self, ContentQuery, ScanOptions};
@@ -61,7 +62,8 @@ pub struct SearchState {
 
 impl SearchState {
     pub fn clear(&mut self) {
-        *self = SearchState { scope: self.scope, regex: self.regex, extensions: std::mem::take(&mut self.extensions), ..Default::default() };
+        *self =
+            SearchState { scope: self.scope, regex: self.regex, extensions: std::mem::take(&mut self.extensions), ..Default::default() };
     }
 
     pub fn active_for(&self, tab: TabId) -> bool {
@@ -104,7 +106,9 @@ pub fn open_search_dialog(w: &mut Workspace, window: &mut Window, cx: &mut Conte
     let s2 = submit.clone();
     w._subscriptions.push(cx.subscribe_in(&query, window, move |_, _, ev: &InputEvent, window, cx| {
         if let InputEvent::PressEnter { .. } = ev {
-            s2(window, cx);
+            // Deferred: this runs inside a Workspace update and `submit` updates it again (abort).
+            let s2 = s2.clone();
+            window.defer(cx, move |window, cx| s2(window, cx));
         }
     }));
     window.open_dialog(cx, move |dialog, window, cx| {
@@ -123,20 +127,24 @@ pub fn open_search_dialog(w: &mut Workspace, window: &mut Window, cx: &mut Conte
                 "Search method",
                 h_flex().flex_wrap().gap_2().children(Scope::ALL.iter().map(|s| {
                     let (s, scope) = (*s, scope.clone());
-                    Button::new(SharedString::from(format!("scope-{s:?}"))).small().label(s.label()).selected(current == s).on_click(move |_, window, _| {
-                        scope.set(s);
-                        window.refresh();
-                    })
+                    Button::new(SharedString::from(format!("scope-{s:?}"))).small().label(s.label()).selected(current == s).on_click(
+                        move |_, window, _| {
+                            scope.set(s);
+                            window.refresh();
+                        },
+                    )
                 })),
             ))
             .when(current == Scope::Content, |d| {
                 let regex = regex.clone();
                 let on = regex.get();
                 d.child(field("File extensions", Input::new(&exts))).child(
-                    gpui_kit::component::checkbox::Checkbox::new("regex").label("Regular expression").checked(on).on_click(move |v, window, _| {
-                        regex.set(*v);
-                        window.refresh();
-                    }),
+                    gpui_kit::component::checkbox::Checkbox::new("regex").label("Regular expression").checked(on).on_click(
+                        move |v, window, _| {
+                            regex.set(*v);
+                            window.refresh();
+                        },
+                    ),
                 )
             })
             .child(div().text_sm().text_color(p.muted).child(SharedString::from(format!(
@@ -177,7 +185,13 @@ fn run_search(w: &mut Workspace, query: String, cx: &mut Context<Workspace>) {
         pattern: query.clone(),
         regex: w.search.regex,
         case_insensitive: true,
-        extensions: w.search.extensions.split([',', ' ']).map(|s| s.trim().trim_start_matches('.').to_lowercase()).filter(|s| !s.is_empty()).collect(),
+        extensions: w
+            .search
+            .extensions
+            .split([',', ' '])
+            .map(|s| s.trim().trim_start_matches('.').to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect(),
         max_file_bytes: 20 << 20,
     };
     start(w, title, cx, move |cancel, tx| match scope {
@@ -194,9 +208,12 @@ fn run_search(w: &mut Workspace, query: String, cx: &mut Context<Workspace>) {
                 }
             }
         }
-        Scope::Recursive => Some((String::new(), search::find_names(&root, &query, &opts, cancel, |b| {
-            let _ = tx.send_blocking(Hit::Paths(b));
-        }))),
+        Scope::Recursive => Some((
+            String::new(),
+            search::find_names(&root, &query, &opts, cancel, |b| {
+                let _ = tx.send_blocking(Hit::Paths(b));
+            }),
+        )),
         Scope::Content => match search::find_content(&root, &content, &opts, cancel, |b| {
             let _ = tx.send_blocking(Hit::Content(b));
         }) {
@@ -210,15 +227,19 @@ fn run_search(w: &mut Workspace, query: String, cx: &mut Context<Workspace>) {
 /// Tag sidebar filter: Spotlight metadata query in the home folder, scan fallback (v0.3).
 pub fn start_tag_search(w: &mut Workspace, tag: String, cx: &mut Context<Workspace>) {
     let root = w.home.clone();
-    start(w, format!("Tag: {tag}"), cx, move |cancel, tx| {
-        match spotlight::run(&spotlight::tag_query(&tag), &root, cancel, 5_000, |b| tx.send_blocking(Hit::Paths(b)).is_ok()) {
+    let standard = w.standard_tag(&tag).cloned();
+    let local = w.tag_label(&tag);
+    start(w, format!("Tag: {local}"), cx, move |cancel, tx| {
+        let is_tag = |t: &Tag| tag_matches(standard.as_ref(), &tag, t);
+        let names: Vec<&str> = if local == tag { vec![&tag] } else { vec![&local, &tag] };
+        match spotlight::run(&spotlight::tag_query(&names), &root, cancel, 5_000, |b| tx.send_blocking(Hit::Paths(b)).is_ok()) {
             Ok(()) => None,
             Err(e) => {
                 let mut report = wayfold_core::search::ScanReport::default();
                 let opts = ScanOptions::default();
                 // Scan fallback: names don't matter, check tags of every entry.
                 let r = search::find_names(&root, "", &ScanOptions { max_results: usize::MAX, ..opts }, cancel, |b| {
-                    let tagged: Vec<PathBuf> = b.into_iter().filter(|p| wayfold_core::fs::tags::read(p).contains(&tag)).collect();
+                    let tagged: Vec<PathBuf> = b.into_iter().filter(|p| wayfold_core::fs::tags::read(p).iter().any(is_tag)).collect();
                     if !tagged.is_empty() {
                         let _ = tx.send_blocking(Hit::Paths(tagged));
                     }
@@ -228,6 +249,12 @@ pub fn start_tag_search(w: &mut Workspace, tag: String, cx: &mut Context<Workspa
             }
         }
     });
+}
+
+/// Whether `t` is the tag for filter key `key`: the standard tag by color and name (`standard`
+/// is Finder's tag for an English key), a custom tag by name only.
+pub(crate) fn tag_matches(standard: Option<&Tag>, key: &str, t: &Tag) -> bool {
+    standard.map_or(t.name == key, |s| t.is_standard(s, key))
 }
 
 type Job = Box<dyn FnOnce(&CancelToken, &async_channel::Sender<Hit>) -> Option<(String, search::ScanReport)> + Send>;
@@ -318,7 +345,11 @@ pub fn render_results(w: &Workspace, ix: usize, cx: &mut Context<Workspace>) -> 
         .border_b_1()
         .border_color(p.line)
         .child(div().font_weight(FontWeight::SEMIBOLD).child(SharedString::from(s.title.clone())))
-        .child(div().text_color(p.muted).child(SharedString::from(format!("{count} result(s){}", if s.running { " · searching…" } else { "" }))))
+        .child(
+            div()
+                .text_color(p.muted)
+                .child(SharedString::from(format!("{count} result(s){}", if s.running { " · searching…" } else { "" }))),
+        )
         .when_some(s.note.clone(), |d, n| d.child(div().text_color(p.warning).truncate().child(SharedString::from(n))))
         .child(div().flex_1())
         .when(s.running, |d| {

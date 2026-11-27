@@ -2,9 +2,9 @@
 //! completes to the longest common prefix. Directory reads run on the worker pool.
 
 use crate::app::state::resolve_input;
+use gpui_kit::component::IndexPath;
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::list::{ListDelegate, ListItem, ListState};
-use gpui_kit::component::IndexPath;
 use gpui_kit::*;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

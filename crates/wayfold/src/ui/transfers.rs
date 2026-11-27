@@ -2,23 +2,22 @@
 //! only turns them into view state and forwards user decisions.
 
 use crate::ui::browser::icon;
-use crate::ui::theme::{palette, QUEUE_H};
+use crate::ui::theme::{QUEUE_H, palette};
 use crate::ui::workspace::Workspace;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::progress::Progress;
-use gpui_kit::component::{h_flex, v_flex, WindowExt as _};
-use gpui_kit::*;
+use gpui_kit::component::{WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::component::Sizable as _;
+use gpui_kit::*;
 use std::cell::Cell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Instant;
 use wayfold_core::fs::format_size;
 use wayfold_core::ops::{
-    self, ConflictAction, ConflictResolution, ItemOutcome, TransferEvent, TransferHandle, TransferMode, TransferRequest,
-    TransferState,
+    self, ConflictAction, ConflictResolution, ItemOutcome, TransferEvent, TransferHandle, TransferMode, TransferRequest, TransferState,
 };
 
 pub struct TransferView {
@@ -67,7 +66,14 @@ impl Workspace {
     }
 
     /// Submit a transfer: the request (sources + destination) is captured now (F01/F03).
-    pub fn start_transfer(&mut self, mode: TransferMode, sources: Vec<PathBuf>, dest: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn start_transfer(
+        &mut self,
+        mode: TransferMode,
+        sources: Vec<PathBuf>,
+        dest: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if sources.is_empty() {
             return;
         }
@@ -177,8 +183,9 @@ impl Workspace {
 /// Enter does not choose a destructive action.
 fn open_conflict_dialog(handle: Rc<TransferHandle>, source: PathBuf, existing: PathBuf, window: &mut Window, cx: &mut App) {
     let apply_all = Rc::new(Cell::new(false));
-    let answered = Rc::new(Cell::new(false));
+    let unanswered = SkipIfUnanswered { handle, answered: Rc::new(Cell::new(false)) };
     window.open_dialog(cx, move |dialog, _, cx| {
+        let (handle, answered) = (&unanswered.handle, &unanswered.answered);
         let p = palette(cx);
         let choose = |action: ConflictAction, handle: Rc<TransferHandle>, apply_all: Rc<Cell<bool>>, answered: Rc<Cell<bool>>| {
             move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
@@ -196,15 +203,6 @@ fn open_conflict_dialog(handle: Rc<TransferHandle>, source: PathBuf, existing: P
             .overlay_closable(false)
             .keyboard(false)
             .close_button(false)
-            .on_close({
-                // Closing without an answer skips this item rather than replacing anything.
-                let (h, d) = (handle.clone(), answered.clone());
-                move |_, _, _| {
-                    if !d.get() {
-                        h.resolve(ConflictResolution { action: ConflictAction::Skip, apply_to_remaining: false });
-                    }
-                }
-            })
             .child(
                 v_flex()
                     .gap_3()
@@ -212,15 +210,12 @@ fn open_conflict_dialog(handle: Rc<TransferHandle>, source: PathBuf, existing: P
                     .child(div().text_color(p.muted).child(SharedString::from(format!("Source: {}", source.display()))))
                     .child(div().text_color(p.muted).child(SharedString::from(format!("Existing: {}", existing.display()))))
                     .child(div().child("Replace moves the existing item to the Trash."))
-                    .child(
-                        Checkbox::new("apply-all")
-                            .label("Apply to remaining conflicts")
-                            .checked(checked)
-                            .on_click(move |v, window, _| {
-                                a2.set(*v);
-                                window.refresh();
-                            }),
-                    ),
+                    .child(Checkbox::new("apply-all").label("Apply to remaining conflicts").checked(checked).on_click(
+                        move |v, window, _| {
+                            a2.set(*v);
+                            window.refresh();
+                        },
+                    )),
             )
             .footer(
                 h_flex()
@@ -231,10 +226,32 @@ fn open_conflict_dialog(handle: Rc<TransferHandle>, source: PathBuf, existing: P
                     .border_t_1()
                     .border_color(p.line)
                     .child(Button::new("skip").label("Skip").on_click(choose(ConflictAction::Skip, h.clone(), a.clone(), d.clone())))
-                    .child(Button::new("keep").label("Keep Both").on_click(choose(ConflictAction::KeepBoth, h.clone(), a.clone(), d.clone())))
+                    .child(Button::new("keep").label("Keep Both").on_click(choose(
+                        ConflictAction::KeepBoth,
+                        h.clone(),
+                        a.clone(),
+                        d.clone(),
+                    )))
                     .child(Button::new("replace").danger().label("Replace").on_click(choose(ConflictAction::Replace, h, a, d))),
             )
     });
+}
+
+/// Owned by the conflict dialog's builder, so it drops with the dialog. `close_dialog` closes the
+/// newest dialog without running `on_close` (e.g. another dialog closing itself while this one is
+/// on top): the transfer must still get an answer, and skipping replaces nothing. On window close
+/// this Skip races the transfer's receiver being dropped, so the item may be skipped or the job cancelled.
+struct SkipIfUnanswered {
+    handle: Rc<TransferHandle>,
+    answered: Rc<Cell<bool>>,
+}
+
+impl Drop for SkipIfUnanswered {
+    fn drop(&mut self) {
+        if !self.answered.get() {
+            self.handle.resolve(ConflictResolution { action: ConflictAction::Skip, apply_to_remaining: false });
+        }
+    }
 }
 
 pub fn render_queue(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElement {
@@ -255,20 +272,16 @@ pub fn render_queue(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElem
                 .border_color(p.line)
                 .child(div().font_weight(FontWeight::SEMIBOLD).child("Transfer queue"))
                 .child(div().flex_1())
-                .child(
-                    Button::new("queue-clear")
-                        .ghost()
-                        .xsmall()
-                        .label("Clear finished")
-                        .on_click(cx.listener(|w, _, _, cx| {
-                            w.transfers.retain(|t| !t.state.is_final());
-                            cx.notify();
-                        })),
-                )
-                .child(Button::new("queue-close").ghost().xsmall().icon(icon("x")).tooltip("Close").on_click(cx.listener(|w, _, _, cx| {
-                    w.queue_open = false;
+                .child(Button::new("queue-clear").ghost().xsmall().label("Clear finished").on_click(cx.listener(|w, _, _, cx| {
+                    w.transfers.retain(|t| !t.state.is_final());
                     cx.notify();
-                }))),
+                })))
+                .child(Button::new("queue-close").ghost().xsmall().icon(icon("x")).tooltip("Close").on_click(cx.listener(
+                    |w, _, _, cx| {
+                        w.queue_open = false;
+                        cx.notify();
+                    },
+                ))),
         )
         .child(
             v_flex()
@@ -281,7 +294,10 @@ pub fn render_queue(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElem
                 })
                 .children(w.transfers.iter().rev().map(|t| {
                     let pct = t.totals.map(|(b, _)| if b == 0 { 100. } else { t.bytes_done as f32 / b as f32 * 100. });
-                    let running = matches!(t.state, TransferState::Running | TransferState::Planning | TransferState::Queued | TransferState::WaitingConflict);
+                    let running = matches!(
+                        t.state,
+                        TransferState::Running | TransferState::Planning | TransferState::Queued | TransferState::WaitingConflict
+                    );
                     let paused = t.state == TransferState::Paused;
                     let h1 = t.handle.clone();
                     let h2 = t.handle.clone();
@@ -306,7 +322,11 @@ pub fn render_queue(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElem
                         .child(
                             h_flex()
                                 .gap_2()
-                                .child(div().flex_1().truncate().child(SharedString::from(format!("{verb} {} → {}", t.label, t.dest.display()))))
+                                .child(div().flex_1().truncate().child(SharedString::from(format!(
+                                    "{verb} {} → {}",
+                                    t.label,
+                                    t.dest.display()
+                                ))))
                                 .when(running || paused, |d| {
                                     d.child(
                                         Button::new(SharedString::from(format!("pause-{}", t.id)))
@@ -338,9 +358,20 @@ pub fn render_queue(w: &Workspace, cx: &mut Context<Workspace>) -> impl IntoElem
                         })
                         .child(div().text_xs().text_color(p.muted).child(SharedString::from(detail)))
                         .when_some(t.current.clone().filter(|_| running), |d, c| {
-                            d.child(div().text_xs().text_color(p.muted).truncate().child(SharedString::from(format!("Current: {}", c.display()))))
+                            d.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(p.muted)
+                                    .truncate()
+                                    .child(SharedString::from(format!("Current: {}", c.display()))),
+                            )
                         })
-                        .children(t.errors.iter().take(5).map(|e| div().text_xs().text_color(p.danger).child(SharedString::from(format!("⚠ {e}")))))
+                        .children(
+                            t.errors
+                                .iter()
+                                .take(5)
+                                .map(|e| div().text_xs().text_color(p.danger).child(SharedString::from(format!("⚠ {e}")))),
+                        )
                 })),
         )
 }

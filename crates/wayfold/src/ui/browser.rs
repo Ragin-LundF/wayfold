@@ -3,16 +3,16 @@
 
 use crate::app::actions::*;
 use crate::app::state::*;
-use crate::ui::theme::{self, palette, Palette, HEADER_H, ROW_H, TABSTRIP_H};
+use crate::ui::theme::{self, HEADER_H, Palette, ROW_H, TABSTRIP_H, palette};
 use crate::ui::workspace::Workspace;
-use gpui_kit::component::menu::ContextMenuExt;
-use gpui_kit::component::{h_flex, v_flex, Icon};
-use gpui_kit::*;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::Sizable as _;
+use gpui_kit::component::menu::ContextMenuExt;
+use gpui_kit::component::{Icon, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use wayfold_core::fs::{format_size, Entry, Kind};
+use wayfold_core::fs::{Entry, Kind, format_size};
 
 pub fn icon(name: &str) -> Icon {
     Icon::empty().path(SharedString::from(format!("icons/{name}.svg")))
@@ -65,8 +65,8 @@ impl Render for DragPreview {
 pub fn format_time(t: Option<SystemTime>) -> String {
     let Some(t) = t else { return "—".into() };
     let Ok(d) = t.duration_since(SystemTime::UNIX_EPOCH) else { return "—".into() };
-    let secs = d.as_secs() as i64;
-    // Civil date from days since epoch (UTC; shortcut: no local timezone offset, upgrade with a tz crate if users ask).
+    let utc = d.as_secs() as i64;
+    let secs = utc + wayfold_core::platform::utc_offset(utc);
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let (y, m, dd) = civil_from_days(days);
@@ -87,24 +87,16 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 pub fn tag_dots(e: &Entry) -> impl IntoElement {
-    h_flex().gap(px(3.)).children(e.tags.iter().filter_map(|t| {
-        theme::tag_color(t).map(|c| div().size(px(9.)).rounded_full().bg(c).flex_none())
-    }))
+    h_flex()
+        .gap(px(3.))
+        .children(e.tags.iter().filter_map(|t| theme::tag_color(t.color).map(|c| div().size(px(9.)).rounded_full().bg(c).flex_none())))
 }
 
 /// Clipboard mark: icon + text, never color alone (F01).
 fn clip_mark(w: &Workspace, e: &Entry, p: &Palette) -> Option<AnyElement> {
     let mode = w.clip_mode_for(&e.path)?;
     let (ico, label) = if mode == ClipMode::Cut { ("scissors", "CUT") } else { ("copy", "COPY") };
-    Some(
-        h_flex()
-            .gap_1()
-            .text_xs()
-            .text_color(p.warning)
-            .child(icon(ico).xsmall().text_color(p.warning))
-            .child(label)
-            .into_any_element(),
-    )
+    Some(h_flex().gap_1().text_xs().text_color(p.warning).child(icon(ico).xsmall().text_color(p.warning)).child(label).into_any_element())
 }
 
 pub use crate::ui::clipboard::ClipMode;
@@ -255,7 +247,9 @@ fn render_tabs(w: &Workspace, ix: usize, cx: &mut Context<Workspace>) -> impl In
                                 }
                             }))
                         })
-                        .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(format!("Close {title} tab")).build(window, cx))
+                        .tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(format!("Close {title} tab")).build(window, cx)
+                        })
                         .child(icon("x").xsmall()),
                 )
         }))
@@ -321,7 +315,7 @@ fn render_breadcrumb(w: &Workspace, ix: usize, loading: bool, cx: &mut Context<W
         .when(!tab.filter.is_empty(), |d| {
             d.child(div().ml_2().text_color(p.warning).child(SharedString::from(format!("Filter: {}", tab.filter))))
         })
-        .when_some(w.tag_filter.clone(), |d, t| {
+        .when_some(w.tag_filter.as_deref().map(|t| w.tag_label(t)), |d, t| {
             d.child(div().ml_2().text_color(p.warning).child(SharedString::from(format!("Tag: {t}"))))
         })
         .when(loading, |d| d.child(div().ml_auto().text_xs().child("Loading…")))
@@ -403,10 +397,11 @@ fn drag_source<E: StatefulInteractiveElement>(el: E, w: &Workspace, e: &Entry) -
         (vec![e.path.clone()], vec![e.is_dir()])
     };
     let label: SharedString = if paths.len() == 1 { e.display_name().into() } else { format!("{} items", paths.len()).into() };
-    el.on_drag(DraggedEntries { paths, dirs }, move |_, _, _, cx| cx.new(|_| DragPreview { label: label.clone() }))
-        .external_drag_payload(|d: &DraggedEntries, _, _| {
+    el.on_drag(DraggedEntries { paths, dirs }, move |_, _, _, cx| cx.new(|_| DragPreview { label: label.clone() })).external_drag_payload(
+        |d: &DraggedEntries, _, _| {
             Some(ExternalDragPayload::Files(FileDragPaths::new(d.paths.iter().cloned().zip(d.dirs.iter().copied()))))
-        })
+        },
+    )
 }
 
 fn row_bg(sel: bool, p: &Palette) -> Hsla {
@@ -533,13 +528,24 @@ fn render_list(w: &Workspace, ix: usize, cx: &mut Context<Workspace>) -> impl In
                                 .child(div().truncate().child(shown_name(w, e)))
                                 .child(tag_dots(e))
                                 .children(clip_mark(w, e, &p))
-                                .when_some(e.error.clone(), |d, err| d.child(div().text_xs().text_color(p.danger).child(format!("⚠ {err}")))),
+                                .when_some(e.error.clone(), |d, err| {
+                                    d.child(div().text_xs().text_color(p.danger).child(format!("⚠ {err}")))
+                                }),
                         )
-                        .when(w.column_visible("Size"), |d| d.child(div().w(px(cols[1] + 5.)).flex_none().px_2().text_color(p.muted).child(size_text(w, e))))
-                        .when(w.column_visible("Kind"), |d| d.child(div().w(px(cols[2] + 5.)).flex_none().px_2().text_color(p.muted).truncate().child(e.kind_label())))
-                        .when(w.column_visible("Modified"), |d| d.child(div().w(px(cols[3] + 5.)).flex_none().px_2().text_color(p.muted).child(format_time(e.modified))))
+                        .when(w.column_visible("Size"), |d| {
+                            d.child(div().w(px(cols[1] + 5.)).flex_none().px_2().text_color(p.muted).child(size_text(w, e)))
+                        })
+                        .when(w.column_visible("Kind"), |d| {
+                            d.child(div().w(px(cols[2] + 5.)).flex_none().px_2().text_color(p.muted).truncate().child(e.kind_label()))
+                        })
+                        .when(w.column_visible("Modified"), |d| {
+                            d.child(div().w(px(cols[3] + 5.)).flex_none().px_2().text_color(p.muted).child(format_time(e.modified)))
+                        })
                         .on_click(cx.listener(move |w, ev, window, cx| click_entry(w, ix, &path, ev, window, cx)))
-                        .on_mouse_down(MouseButton::Right, cx.listener(move |w, _, window, cx| select_for_context(w, ix, &path2, window, cx)));
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |w, _, window, cx| select_for_context(w, ix, &path2, window, cx)),
+                        );
                     let row = drag_source(row, w, e);
                     let row = drop_target(row, e, ix, cx);
                     entry_context_menu(row).into_any_element()
@@ -631,7 +637,8 @@ fn drop_target<E: InteractiveElement>(el: E, e: &Entry, _ix: usize, cx: &mut Con
 fn a11y_label(w: &Workspace, e: &Entry) -> SharedString {
     let mut s = format!("{}, {}, {}", e.display_name(), e.kind_label(), size_text(w, e));
     if !e.tags.is_empty() {
-        s.push_str(&format!(", tags {}", e.tags.join(" ")));
+        let names: Vec<&str> = e.tags.iter().map(|t| t.name.as_str()).collect();
+        s.push_str(&format!(", tags {}", names.join(" ")));
     }
     match w.clip_mode_for(&e.path) {
         Some(ClipMode::Cut) => s.push_str(", cut"),
@@ -650,6 +657,8 @@ pub fn size_text(w: &Workspace, e: &Entry) -> SharedString {
 
 const TILE_W: f32 = 108.;
 const TILE_H: f32 = 96.;
+/// Height of one row of icon tiles, gap included.
+pub const ICON_ROW_H: f32 = TILE_H + 8.;
 
 fn render_icons(w: &Workspace, ix: usize, window: &mut Window, cx: &mut Context<Workspace>) -> impl IntoElement {
     let p = palette(cx);
@@ -660,6 +669,7 @@ fn render_icons(w: &Workspace, ix: usize, window: &mut Window, cx: &mut Context<
     let side = theme::SIDEBAR_W + if w.preview_open && vw > theme::NARROW_W { theme::PREVIEW_W } else { 0. };
     let pane_w = ((vw - side) / w.panes.len() as f32 - 24.).max(TILE_W);
     let per_row = ((pane_w / (TILE_W + 8.)) as usize).max(1);
+    w.icons_per_row.set(per_row);
     let row_count = count.div_ceil(per_row);
     let scroll = w.scroll.get(&tab.id).cloned().unwrap_or_default();
     if count == 0 {
@@ -675,7 +685,7 @@ fn render_icons(w: &Workspace, ix: usize, window: &mut Window, cx: &mut Context<
             range
                 .map(|r| {
                     let items = &rows[(r * per_row).min(rows.len())..((r + 1) * per_row).min(rows.len())];
-                    h_flex().id(("icon-row", r)).h(px(TILE_H + 8.)).px_3().gap_2().children(items.iter().map(|e| {
+                    h_flex().id(("icon-row", r)).h(px(ICON_ROW_H)).px_3().gap_2().children(items.iter().map(|e| {
                         let sel = tab.selection.contains(&e.path);
                         let cut = w.clip_mode_for(&e.path) == Some(ClipMode::Cut);
                         let path = e.path.clone();
@@ -698,7 +708,10 @@ fn render_icons(w: &Workspace, ix: usize, window: &mut Window, cx: &mut Context<
                             .child(div().text_xs().text_center().line_clamp(2).child(shown_name(w, e)))
                             .child(h_flex().gap_1().child(tag_dots(e)).children(clip_mark(w, e, &p)))
                             .on_click(cx.listener(move |w, ev, window, cx| click_entry(w, ix, &path, ev, window, cx)))
-                            .on_mouse_down(MouseButton::Right, cx.listener(move |w, _, window, cx| select_for_context(w, ix, &path2, window, cx)));
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |w, _, window, cx| select_for_context(w, ix, &path2, window, cx)),
+                            );
                         let tile = drag_source(tile, w, e);
                         entry_context_menu(drop_target(tile, e, ix, cx))
                     }))
@@ -725,7 +738,12 @@ fn render_columns(w: &Workspace, ix: usize, cx: &mut Context<Workspace>) -> impl
         let entries: Vec<Entry> = w
             .cache
             .get(&dir)
-            .map(|l| visible_rows(&l.entries, w.filters, if is_current { &tab.filter } else { "" }, tab.sort).into_iter().cloned().collect())
+            .map(|l| {
+                visible_rows(&l.entries, w.filters, if is_current { &tab.filter } else { "" }, w.effective_sort(tab.sort))
+                    .into_iter()
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default();
         // In ancestor columns the child on the path is highlighted.
         let on_path: Option<PathBuf> = tab.location.ancestors().find(|a| a.parent() == Some(dir.as_path())).map(Path::to_path_buf);
@@ -733,52 +751,48 @@ fn render_columns(w: &Workspace, ix: usize, cx: &mut Context<Workspace>) -> impl
         let entries = std::rc::Rc::new(entries);
         let count = entries.len();
         let dir_for_list = dir.clone();
-        div()
-            .flex_1()
-            .min_w(px(160.))
-            .h_full()
-            .when(k + 1 < n, |d| d.border_r_1().border_color(p.line))
-            .child(
-                uniform_list(
-                    SharedString::from(format!("col-{ix}-{}", dir.display())),
-                    count,
-                    cx.processor(move |_w: &mut Workspace, range: std::ops::Range<usize>, _window, cx| {
-                        let p = palette(cx);
-                        entries[range.start.min(count)..range.end.min(count)]
-                            .iter()
-                            .map(|e| {
-                                let sel = if is_current { selection.contains(&e.path) } else { on_path.as_ref() == Some(&e.path) };
-                                let path = e.path.clone();
-                                let dir = dir_for_list.clone();
-                                h_flex()
-                                    .id(SharedString::from(e.path.to_string_lossy().into_owned()))
-                                    .role(Role::ListItem)
-                                    .aria_label(SharedString::from(format!("{}, {}", e.display_name(), e.kind_label())))
-                                    .aria_selected(sel)
-                                    .h(px(ROW_H - 4.))
-                                    .px_2()
-                                    .gap_2()
-                                    .text_sm()
-                                    .bg(row_bg(sel, &p))
-                                    .when(!sel, |d| d.hover(|s| s.bg(p.hover)))
-                                    .child(entry_icon(e).small().text_color(if e.is_dir() { p.accent } else { p.muted }))
-                                    .child(div().flex_1().truncate().child(e.display_name()))
-                                    .child(tag_dots(e))
-                                    .when(e.is_dir(), |d| d.child(icon("chevron-right").xsmall().text_color(p.muted)))
-                                    .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| {
-                                        if w.tab().location != dir {
-                                            // Clicking in another column moves the current folder there.
-                                            w.active_pane = ix;
-                                            w.navigate(dir.clone(), cx);
-                                        }
-                                        click_entry(w, ix, &path, ev, window, cx);
-                                    }))
-                            })
-                            .collect::<Vec<_>>()
-                    }),
-                )
-                .size_full(),
+        div().flex_1().min_w(px(160.)).h_full().when(k + 1 < n, |d| d.border_r_1().border_color(p.line)).child(
+            uniform_list(
+                SharedString::from(format!("col-{ix}-{}", dir.display())),
+                count,
+                cx.processor(move |_w: &mut Workspace, range: std::ops::Range<usize>, _window, cx| {
+                    let p = palette(cx);
+                    entries[range.start.min(count)..range.end.min(count)]
+                        .iter()
+                        .map(|e| {
+                            let sel = if is_current { selection.contains(&e.path) } else { on_path.as_ref() == Some(&e.path) };
+                            let path = e.path.clone();
+                            let dir = dir_for_list.clone();
+                            h_flex()
+                                .id(SharedString::from(e.path.to_string_lossy().into_owned()))
+                                .debug_selector(|| format!("col-row-{}", e.name.to_string_lossy()))
+                                .role(Role::ListItem)
+                                .aria_label(SharedString::from(format!("{}, {}", e.display_name(), e.kind_label())))
+                                .aria_selected(sel)
+                                .h(px(ROW_H - 4.))
+                                .px_2()
+                                .gap_2()
+                                .text_sm()
+                                .bg(row_bg(sel, &p))
+                                .when(!sel, |d| d.hover(|s| s.bg(p.hover)))
+                                .child(entry_icon(e).small().text_color(if e.is_dir() { p.accent } else { p.muted }))
+                                .child(div().flex_1().truncate().child(e.display_name()))
+                                .child(tag_dots(e))
+                                .when(e.is_dir(), |d| d.child(icon("chevron-right").xsmall().text_color(p.muted)))
+                                .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| {
+                                    if w.tab().location != dir {
+                                        // Clicking in another column moves the current folder there.
+                                        w.active_pane = ix;
+                                        w.navigate(dir.clone(), cx);
+                                    }
+                                    click_entry(w, ix, &path, ev, window, cx);
+                                }))
+                        })
+                        .collect::<Vec<_>>()
+                }),
             )
+            .size_full(),
+        )
     }))
 }
 

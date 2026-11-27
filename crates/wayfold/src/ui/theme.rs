@@ -1,7 +1,7 @@
 //! Semantic theme tokens from 02-design.md. Components read roles, never literal colors.
 
 use gpui_kit::component::{Theme, ThemeMode};
-use gpui_kit::{rgb, App, Global, Hsla};
+use gpui_kit::{App, Global, Hsla, rgb};
 
 #[derive(Clone, Copy)]
 pub struct Palette {
@@ -16,8 +16,6 @@ pub struct Palette {
     pub danger: Hsla,
     pub hover: Hsla,
     pub control: Hsla,
-    pub terminal_bg: Hsla,
-    pub dark: bool,
 }
 
 impl Global for Palette {}
@@ -36,8 +34,6 @@ impl Palette {
             danger: rgb(0xef6464).into(),
             hover: rgb(0x263243).into(),
             control: rgb(0x242933).into(),
-            terminal_bg: rgb(0x111419).into(),
-            dark: true,
         }
     }
 
@@ -55,8 +51,6 @@ impl Palette {
             danger: rgb(0xb42318).into(),
             hover: rgb(0xe8eef8).into(),
             control: rgb(0xffffff).into(),
-            terminal_bg: rgb(0xfbfbfc).into(),
-            dark: false,
         }
     }
 }
@@ -114,8 +108,9 @@ pub const TAGS: [(&str, u32); 7] = [
     ("Gray", 0x9da5af),
 ];
 
-pub fn tag_color(name: &str) -> Option<Hsla> {
-    TAGS.iter().find(|(n, _)| *n == name).map(|(_, c)| rgb(*c).into())
+/// Dot color for a Finder color index (names are localized, the index is not).
+pub fn tag_color(color: u8) -> Option<Hsla> {
+    TAGS.iter().find(|(n, _)| wayfold_core::fs::tags::color_index(n) == Some(color)).map(|(_, c)| rgb(*c).into())
 }
 
 // Layout tokens (02-design.md "Layout").

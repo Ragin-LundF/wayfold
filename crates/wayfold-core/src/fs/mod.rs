@@ -5,8 +5,8 @@ pub mod size;
 pub mod tags;
 mod volumes;
 
-pub use list::{list_dir, stat_entry, BATCH};
-pub use volumes::{is_network_path, mounts, refresh_mounts, Mount};
+pub use list::{BATCH, list_dir, stat_entry};
+pub use volumes::{Mount, is_network_path, mounts, refresh_mounts};
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -17,7 +17,10 @@ pub enum Kind {
     File,
     Dir,
     /// Symlink; `to_dir` is whether its (existing) target is a directory.
-    Symlink { to_dir: bool, broken: bool },
+    Symlink {
+        to_dir: bool,
+        broken: bool,
+    },
     Other,
 }
 
@@ -42,8 +45,8 @@ pub struct Entry {
     pub visibility: Visibility,
     /// Stat failure, shown instead of hiding the entry.
     pub error: Option<String>,
-    /// Finder tag names (v0.3), read from `com.apple.metadata:_kMDItemUserTags`.
-    pub tags: Vec<String>,
+    /// Finder tags (v0.3), read from `com.apple.metadata:_kMDItemUserTags`.
+    pub tags: Vec<tags::Tag>,
 }
 
 impl Entry {
@@ -57,10 +60,7 @@ impl Entry {
 
     /// Extension in lowercase, empty when none.
     pub fn extension(&self) -> String {
-        self.path
-            .extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_default()
+        self.path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
     }
 
     /// Short human kind label for the Kind column.
@@ -84,8 +84,8 @@ pub fn kind_for_extension(ext: &str) -> &'static str {
         "csv" | "tsv" => "CSV",
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "tiff" | "heic" | "svg" => "Image",
         "zip" | "tar" | "gz" | "tgz" | "zst" | "7z" | "rar" | "xz" | "bz2" => "Archive",
-        "rs" | "kt" | "java" | "js" | "ts" | "py" | "c" | "h" | "cpp" | "go" | "swift" | "sh"
-        | "toml" | "json" | "yaml" | "yml" | "xml" | "css" => "Code",
+        "rs" | "kt" | "java" | "js" | "ts" | "py" | "c" | "h" | "cpp" | "go" | "swift" | "sh" | "toml" | "json" | "yaml" | "yml"
+        | "xml" | "css" => "Code",
         "txt" | "log" | "" => "Text",
         "app" => "Application",
         "dmg" | "iso" => "Disk image",

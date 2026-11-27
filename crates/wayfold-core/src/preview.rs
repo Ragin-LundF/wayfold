@@ -11,12 +11,21 @@ pub const MAX_IMAGE_PIXELS: u64 = 60_000_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Preview {
-    Text { text: String, truncated: bool },
+    Text {
+        text: String,
+        truncated: bool,
+    },
     Markdown(String),
     /// Sanitized static HTML.
     Html(String),
-    Csv { rows: Vec<Vec<String>>, truncated: bool },
-    Image { width: usize, height: usize },
+    Csv {
+        rows: Vec<Vec<String>>,
+        truncated: bool,
+    },
+    Image {
+        width: usize,
+        height: usize,
+    },
     /// Quick Look rendering (PDF first page, documents) as a PNG file.
     Thumbnail(PathBuf),
     Unsupported(String),
@@ -103,7 +112,13 @@ fn csv_preview(path: &Path, delim: u8) -> Preview {
         }
         match rec {
             Ok(r) => rows.push(r.iter().take(50).map(|c| c.chars().take(200).collect()).collect()),
-            Err(e) => return if rows.is_empty() { Preview::Unsupported(format!("Malformed CSV: {e}")) } else { Preview::Csv { rows, truncated: true } },
+            Err(e) => {
+                return if rows.is_empty() {
+                    Preview::Unsupported(format!("Malformed CSV: {e}"))
+                } else {
+                    Preview::Csv { rows, truncated: true }
+                };
+            }
         }
     }
     Preview::Csv { rows, truncated: false }
@@ -116,7 +131,9 @@ mod tests {
 
     #[test]
     fn p02_html_cannot_execute_or_fetch() {
-        let out = sanitize_html(r#"<h1 onclick="x()">Hi</h1><script>alert(1)</script><img src="https://e.com/a.png"><a href="https://e.com">l</a><iframe src="https://e.com"></iframe><style>body{background:url(https://e.com)}</style>"#);
+        let out = sanitize_html(
+            r#"<h1 onclick="x()">Hi</h1><script>alert(1)</script><img src="https://e.com/a.png"><a href="https://e.com">l</a><iframe src="https://e.com"></iframe><style>body{background:url(https://e.com)}</style>"#,
+        );
         assert!(out.contains("<h1>Hi</h1>"), "{out}");
         for bad in ["script", "onclick", "img", "https://", "iframe", "style"] {
             assert!(!out.contains(bad), "{bad} in {out}");

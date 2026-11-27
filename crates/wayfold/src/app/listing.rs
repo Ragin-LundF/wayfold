@@ -15,7 +15,8 @@ pub struct Listing {
     /// Refresh of an already shown listing: collect here, swap on finish (no flicker).
     pending: Option<Vec<Entry>>,
     last_used: u64,
-    /// Bumped whenever `entries` changes; keys the sorted-row cache.
+    /// Changes whenever `entries` changes, unique across listings (taken from the cache clock);
+    /// keys the sorted-row cache, which must not mix up a reloaded listing with an evicted one.
     pub version: u64,
 }
 
@@ -35,18 +36,23 @@ impl ListingCache {
     }
 
     pub fn touch(&mut self, path: &Path) {
-        self.clock += 1;
+        let clock = self.tick();
         if let Some(l) = self.map.get_mut(path) {
-            l.last_used = self.clock;
+            l.last_used = clock;
         }
+    }
+
+    fn tick(&mut self) -> u64 {
+        self.clock += 1;
+        self.clock
     }
 
     /// Start (re)loading `path`. Returns the generation to tag batches with.
     pub fn begin(&mut self, path: &Path) -> u64 {
-        self.clock += 1;
-        let clock = self.clock;
+        let clock = self.tick();
         let l = self.map.entry(path.to_path_buf()).or_default();
         l.generation += 1;
+        l.version = clock;
         l.loading = true;
         l.last_used = clock;
         let shown = !l.entries.is_empty() || l.error.is_some();
@@ -56,13 +62,14 @@ impl ListingCache {
 
     /// Returns true when the batch was accepted (current generation).
     pub fn push_batch(&mut self, path: &Path, generation: u64, batch: Vec<Entry>) -> bool {
+        let clock = self.tick();
         match self.map.get_mut(path) {
             Some(l) if l.generation == generation => {
                 match &mut l.pending {
                     Some(p) => p.extend(batch),
                     None => {
                         l.entries.extend(batch);
-                        l.version += 1;
+                        l.version = clock;
                     }
                 }
                 true
@@ -72,19 +79,20 @@ impl ListingCache {
     }
 
     pub fn finish(&mut self, path: &Path, generation: u64, error: Option<String>) -> bool {
+        let clock = self.tick();
         match self.map.get_mut(path) {
             Some(l) if l.generation == generation => {
                 l.loading = false;
-                if let Some(p) = l.pending.take() {
-                    if error.is_none() {
-                        l.entries = p;
-                    }
+                if let Some(p) = l.pending.take()
+                    && error.is_none()
+                {
+                    l.entries = p;
                 }
                 if error.is_some() {
                     l.entries.clear();
                 }
                 l.error = error;
-                l.version += 1;
+                l.version = clock;
                 true
             }
             _ => false,
@@ -93,15 +101,12 @@ impl ListingCache {
 
     /// Insert or replace one entry (e.g. right after creating it) without a full reload.
     pub fn upsert(&mut self, dir: &Path, entry: Entry) {
+        let clock = self.tick();
         if let Some(l) = self.map.get_mut(dir) {
             l.entries.retain(|e| e.path != entry.path);
             l.entries.push(entry);
-            l.version += 1;
+            l.version = clock;
         }
-    }
-
-    pub fn invalidate(&mut self, path: &Path) {
-        self.map.remove(path);
     }
 
     /// Evict least recently used listings outside `keep` until under the entry bound.
@@ -110,12 +115,8 @@ impl ListingCache {
         if total <= self.max_entries {
             return;
         }
-        let mut victims: Vec<(u64, PathBuf)> = self
-            .map
-            .iter()
-            .filter(|(p, l)| !keep.contains(*p) && !l.loading)
-            .map(|(p, l)| (l.last_used, p.clone()))
-            .collect();
+        let mut victims: Vec<(u64, PathBuf)> =
+            self.map.iter().filter(|(p, l)| !keep.contains(*p) && !l.loading).map(|(p, l)| (l.last_used, p.clone())).collect();
         victims.sort();
         for (_, p) in victims {
             if total <= self.max_entries {
@@ -125,10 +126,6 @@ impl ListingCache {
                 total -= l.entries.len();
             }
         }
-    }
-
-    pub fn len(&self) -> usize {
-        self.map.len()
     }
 }
 
@@ -179,6 +176,24 @@ mod tests {
         let keep: HashSet<PathBuf> = [PathBuf::from("/a")].into();
         c.evict(&keep);
         assert!(c.get(Path::new("/a")).is_some());
-        assert_eq!(c.len(), 1);
+        assert!(c.get(Path::new("/b")).is_none() && c.get(Path::new("/c")).is_none());
+    }
+
+    #[test]
+    fn versions_are_unique_across_listings_and_reloads() {
+        let mut c = ListingCache::new(1);
+        let load = |c: &mut ListingCache, name: &str| {
+            let p = Path::new(name);
+            let g = c.begin(p);
+            c.push_batch(p, g, batch(2));
+            c.finish(p, g, None);
+            c.get(p).unwrap().version
+        };
+        let a = load(&mut c, "/a");
+        let b = load(&mut c, "/b");
+        c.evict(&HashSet::new());
+        assert!(c.get(Path::new("/a")).is_none());
+        let a_again = load(&mut c, "/a");
+        assert!(a != b && a_again != a && a_again != b, "{a} {b} {a_again}");
     }
 }

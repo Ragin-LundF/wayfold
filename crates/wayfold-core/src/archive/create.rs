@@ -1,7 +1,7 @@
 //! Archive creation: ZIP, TAR, TAR.GZ, TAR.ZST. Written to a hidden temp file and
 //! published under a free name; symlinks are stored as links, never followed.
 
-use super::{publish, temp_path, ArchiveError, ArchiveFormat, Progress, ProgressFn};
+use super::{ArchiveError, ArchiveFormat, Progress, ProgressFn, publish, temp_path};
 use crate::pool::CancelToken;
 use std::fs::{self, File, Metadata};
 use std::io::{self, BufWriter, Read, Write};
@@ -9,7 +9,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// Archive `sources` (files or folders, stored under their own names) as `dest`.
-pub fn create_archive(sources: &[PathBuf], dest: &Path, format: ArchiveFormat, cancel: &CancelToken, progress: ProgressFn) -> Result<PathBuf, ArchiveError> {
+pub fn create_archive(
+    sources: &[PathBuf],
+    dest: &Path,
+    format: ArchiveFormat,
+    cancel: &CancelToken,
+    progress: ProgressFn,
+) -> Result<PathBuf, ArchiveError> {
     if !format.can_create() {
         return Err(ArchiveError::Unsupported(format!("cannot create {} archives", format.label())));
     }
@@ -63,7 +69,8 @@ fn write(temp: &Path, items: &[Item], format: ArchiveFormat, cancel: &CancelToke
     let result = match format {
         ArchiveFormat::Zip => write_zip(out, items, &mut counter),
         ArchiveFormat::Tar => write_tar(out, items, &mut counter).and_then(|mut w| Ok(w.flush()?)),
-        ArchiveFormat::TarGz => write_tar(flate2::write::GzEncoder::new(out, flate2::Compression::default()), items, &mut counter).and_then(|w| Ok(w.finish()?.flush()?)),
+        ArchiveFormat::TarGz => write_tar(flate2::write::GzEncoder::new(out, flate2::Compression::default()), items, &mut counter)
+            .and_then(|w| Ok(w.finish()?.flush()?)),
         ArchiveFormat::TarZst => write_tar(zstd::Encoder::new(out, 3)?, items, &mut counter).and_then(|w| Ok(w.finish()?.flush()?)),
         _ => unreachable!("checked by can_create"),
     };
