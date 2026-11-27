@@ -8,6 +8,8 @@ license.workspace = true
 # Redirects Move to Trash into `<data_dir>/test-trash`, but only while WAYFOLD_DATA_DIR is set. Enabled by the
 # `wayfold` dev-dependency; feature unification can still link it into the app binary (e.g. `--all-targets`).
 test-trash = []
+# Same for the system pasteboard: a private named pasteboard per WAYFOLD_DATA_DIR.
+test-pasteboard = []
 
 [dependencies]
 serde.workspace = true

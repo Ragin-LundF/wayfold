@@ -1,5 +1,6 @@
 //! Headless UI tests (spec 07). Each test builds an isolated `harness::Env` first.
 
+mod clipboard;
 mod drop;
 mod folders_first;
 mod harness;

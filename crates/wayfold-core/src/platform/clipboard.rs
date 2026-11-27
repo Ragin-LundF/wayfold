@@ -4,8 +4,17 @@
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{NSPasteboard, NSPasteboardItem, NSPasteboardTypeFileURL, NSPasteboardWriting};
-use objc2_foundation::{NSArray, NSURL};
+use objc2_foundation::{NSArray, NSString, NSURL};
 use std::path::PathBuf;
+
+/// The general pasteboard. Tests with a data dir get a private pasteboard per data dir, so they never
+/// change the user's clipboard; the app binary can link the feature too, hence the env check.
+fn pasteboard() -> Retained<NSPasteboard> {
+    match std::env::var_os("WAYFOLD_DATA_DIR").filter(|_| cfg!(test) || cfg!(feature = "test-pasteboard")) {
+        Some(dir) => NSPasteboard::pasteboardWithName(&NSString::from_str(&format!("wayfold-test {}", dir.display()))),
+        None => NSPasteboard::generalPasteboard(),
+    }
+}
 
 /// Write file URLs; returns the pasteboard change count afterwards.
 pub fn write_file_urls(paths: &[PathBuf]) -> Option<i64> {
@@ -23,19 +32,19 @@ pub fn write_file_urls(paths: &[PathBuf]) -> Option<i64> {
     if items.is_empty() {
         return None;
     }
-    let pb = NSPasteboard::generalPasteboard();
+    let pb = pasteboard();
     pb.clearContents();
     let array = NSArray::from_retained_slice(&items);
     pb.writeObjects(&array).then(|| pb.changeCount() as i64)
 }
 
 pub fn change_count() -> Option<i64> {
-    Some(NSPasteboard::generalPasteboard().changeCount() as i64)
+    Some(pasteboard().changeCount() as i64)
 }
 
 /// File paths currently on the pasteboard (e.g. copied in Finder).
 pub fn read_file_urls() -> Vec<PathBuf> {
-    let pb = NSPasteboard::generalPasteboard();
+    let pb = pasteboard();
     let Some(items) = pb.pasteboardItems() else { return vec![] };
     items
         .iter()
